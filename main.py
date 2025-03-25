@@ -453,7 +453,7 @@ elif selected == "EDA":
     except Exception as e:
         st.error(f"Analysis error: {str(e)}")
 
-        
+
     
 elif selected == "Models":
     st.subheader(':orange[Trained Models Information]', divider=True)
@@ -583,135 +583,167 @@ elif selected == "Prediction":
     
     # Load models
     loaded_models, _ = model_load()
-    data = read_data()
-    X_train, _, _, _, _, _ = train_test_split_data(data)
     
-    with st.form('pm25_prediction_form', border=True):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            lag_1 = st.number_input("Lag 1 (Previous Hour PM2.5)", min_value=0.0, max_value=100.0, value=25.0)
-            lag_2 = st.number_input("Lag 2 (2 Hours Ago PM2.5)", min_value=0.0, max_value=100.0, value=25.0)
-            lag_3 = st.number_input("Lag 3 (3 Hours Ago PM2.5)", min_value=0.0, max_value=100.0, value=25.0)
+    # File upload section
+    uploaded_file = st.file_uploader("Upload your PM2.5 data (CSV format)", type="csv")
+    
+    if uploaded_file is not None:
+        try:
+            # Define the exact columns we will use (all compulsory)
+            required_columns = [
+                'timestamp', 'pm2.5', 'dew_point', 'wind_speed',
+                'wind_deg', 'pressure', 'temperature', 'humidity', 'temp_max'
+            ]
             
-        with col2:
-            lag_4 = st.number_input("Lag 4 (4 Hours Ago PM2.5)", min_value=0.0, max_value=100.0, value=25.0)
-            lag_5 = st.number_input("Lag 5 (5 Hours Ago PM2.5)", min_value=0.0, max_value=100.0, value=25.0)
-            hour = st.selectbox("Hour of Day", options=range(0,24), index=12)
+            # Read only the columns we need
+            df = pd.read_csv(uploaded_file, usecols=lambda col: col in required_columns)
             
-        with col3:
-            year = st.number_input("Year", min_value=2000, max_value=2030, value=2023)
-            week = st.number_input("Week of Year", min_value=1, max_value=52, value=25)
-        
-        col4, col5 = st.columns(2)
-        
-        with col4:
-            st.markdown("### Weather Conditions")
-            dew_point = st.number_input("Dew Point (°C)", value=15.0)
-            feels_like = st.number_input("Feels Like Temperature (°C)", value=20.0)
-            temp_max = st.number_input("Maximum Temperature (°C)", value=25.0)
+            # Verify we have all required columns
+            missing_cols = [col for col in required_columns if col not in df.columns]
+            if missing_cols:
+                st.error(f"Missing required columns: {', '.join(missing_cols)}")
+                st.stop()
             
-        with col5:
-            st.markdown("### Atmospheric Conditions")
-            wind_speed = st.number_input("Wind Speed (km/h)", min_value=0.0, value=10.0)
-            wind_deg = st.number_input("Wind Direction (degrees)", min_value=0, max_value=360, value=180)
-            pressure = st.number_input("Pressure (hPa)", min_value=800.0, max_value=1100.0, value=1013.0)
-            humidity = st.number_input("Humidity (%)", min_value=0, max_value=100, value=50)
+            # Convert timestamp and extract temporal features
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['hour'] = df['timestamp'].dt.hour
+            df['year'] = df['timestamp'].dt.year
+            df['week'] = df['timestamp'].dt.isocalendar().week
+            
+            # Create lag features
+            df = create_lag_features(df, lag=5)
+            
+            # Show preview of processed data
+            with st.expander("Preview Processed Data", expanded=False):
+                st.dataframe(df.head())
+                st.write(f"Data shape: {df.shape}")
+                st.write(f"Columns used: {', '.join(df.columns)}")
+            
+            # Select which timestamp to predict
+            timestamps = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M').tolist()
+            selected_idx = st.selectbox(
+                "Select time point for prediction",
+                options=range(len(timestamps)),
+                format_func=lambda x: timestamps[x]
+            )
+            
+            if st.button("Predict PM2.5"):
+                # Prepare input data with only the features the model expects
+                model_features = [
+                    'lag_1', 'lag_2', 'hour', 'year', 'lag_5', 'lag_3', 'lag_4',
+                    'dew_point', 'wind_speed', 'wind_deg', 'pressure', 'week',
+                    'temperature', 'humidity', 'temp_max'
+                ]
+                input_data = df.iloc[[selected_idx]][model_features]
+                
+                # Make predictions with all models
+                predictions = {}
+                for model_name, model in loaded_models.items():
+                    try:
+                        pred = model.predict(input_data)
+                        predictions[model_name] = float(pred[0])
+                    except Exception as e:
+                        st.error(f"Error predicting with {model_name}: {str(e)}")
+                        predictions[model_name] = None
+                
+                # Display results
+                st.markdown("## Prediction Results")
+                cols = st.columns(len(loaded_models))
+                
+                for (model_name, prediction), col in zip(predictions.items(), cols):
+                    with col:
+                        st.markdown(f"### {model_name}")
+                        if prediction is not None:
+                            # PM2.5 concentration categories
+                            if prediction < 12:
+                                status = "Good"
+                                color = "green"
+                            elif prediction < 35:
+                                status = "Moderate"
+                                color = "blue"
+                            elif prediction < 55:
+                                status = "Unhealthy for Sensitive Groups"
+                                color = "orange"
+                            elif prediction < 150:
+                                status = "Unhealthy"
+                                color = "red"
+                            elif prediction < 250:
+                                status = "Very Unhealthy"
+                                color = "purple"
+                            else:
+                                status = "Hazardous"
+                                color = "maroon"
+                            
+                            st.metric("PM2.5 Concentration", 
+                                    f"{prediction:.2f} μg/m³",
+                                    help=f"AQI Category: {status}")
+                            st.markdown(f":{color}[**{status}**]")
+                            
+                            # Health impact interpretation
+                            health_impacts = {
+                                "Good": "Air quality is satisfactory with little health risk.",
+                                "Moderate": "Acceptable air quality, but some pollutants may affect sensitive individuals.",
+                                "Unhealthy for Sensitive Groups": "Members of sensitive groups may experience health effects.",
+                                "Unhealthy": "Everyone may begin to experience health effects.",
+                                "Very Unhealthy": "Health alert: everyone may experience serious health effects.",
+                                "Hazardous": "Health warning of emergency conditions."
+                            }
+                            st.info(health_impacts[status])
+                        else:
+                            st.warning("Prediction failed")
+                
+                # Add visualization
+                st.markdown("---")
+                st.markdown("### Prediction Comparison")
+                pred_df = pd.DataFrame.from_dict(predictions, orient='index', columns=['PM2.5'])
+                st.bar_chart(pred_df)
+                
+                # Show input features used
+                with st.expander("View Input Features Used"):
+                    st.dataframe(input_data)
         
-        submitted = st.form_submit_button(label='Predict PM2.5')
-        
-    if submitted:
-        # Create input dataframe
-        input_data = pd.DataFrame({
-            'lag_1': [lag_1],
-            'lag_2': [lag_2],
-            'hour': [hour],
-            'year': [year],
-            'lag_5': [lag_5],
-            'lag_3': [lag_3],
-            'lag_4': [lag_4],
-            'dew_point': [dew_point],
-            'wind_speed': [wind_speed],
-            'wind_deg': [wind_deg],
-            'pressure': [pressure],
-            'week': [week],
-            'feels_like': [feels_like],
-            'humidity': [humidity],
-            'temp_max': [temp_max]
-        })
-        
-        st.markdown("#### Prediction Results")
-        
-        # Display input summary
-        with st.expander("Input Summary", expanded=True):
-            st.dataframe(input_data)
-        
-        # Make predictions with all models
-        predictions = {}
-        for model_name, model in loaded_models.items():
-            try:
-                pred = model.predict(input_data)
-                predictions[model_name] = float(pred[0])
-            except Exception as e:
-                st.error(f"Error predicting with {model_name}: {str(e)}")
-                predictions[model_name] = None
-        
-        # Display results in columns
-        cols = st.columns(len(loaded_models))
-        for (model_name, prediction), col in zip(predictions.items(), cols):
-            with col:
-                st.markdown(f"##### {model_name}")
-                if prediction is not None:
-                    # PM2.5 concentration categories
-                    if prediction < 12:
-                        status = "Good"
-                        color = "green"
-                    elif prediction < 35:
-                        status = "Moderate"
-                        color = "blue"
-                    elif prediction < 55:
-                        status = "Unhealthy for Sensitive Groups"
-                        color = "orange"
-                    elif prediction < 150:
-                        status = "Unhealthy"
-                        color = "red"
-                    elif prediction < 250:
-                        status = "Very Unhealthy"
-                        color = "purple"
-                    else:
-                        status = "Hazardous"
-                        color = "maroon"
-                    
-                    st.metric("PM2.5 Concentration", 
-                             f"{prediction:.2f} μg/m³",
-                             help=f"AQI Category: {status}")
-                    st.markdown(f":{color}[**{status}**]")
-                    
-                    # Add interpretation
-                    if status == "Good":
-                        st.info("Air quality is satisfactory with little health risk.")
-                    elif status == "Moderate":
-                        st.info("Acceptable air quality, but some pollutants may affect sensitive individuals.")
-                    elif status == "Unhealthy for Sensitive Groups":
-                        st.warning("Members of sensitive groups may experience health effects.")
-                    elif status == "Unhealthy":
-                        st.warning("Everyone may begin to experience health effects.")
-                    elif status == "Very Unhealthy":
-                        st.error("Health alert: everyone may experience serious health effects.")
-                    else:
-                        st.error("Health warning of emergency conditions.")
-                else:
-                    st.warning("Prediction failed")
-        
-        # Add visualization
-        st.markdown("---")
-        st.markdown("### Prediction Visualization")
-        
-        pred_df = pd.DataFrame.from_dict(predictions, orient='index', columns=['PM2.5'])
-        st.bar_chart(pred_df)
-        
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+    
     else:
-        st.info("Please fill the form to predict PM2.5 concentration")
+        st.info("Please upload a CSV file to begin prediction")
+        st.markdown("""
+        **Required CSV Columns (all compulsory):**
+        - `timestamp` (YYYY-MM-DD HH:MM)
+        - `pm2.5` (μg/m³)
+        - `dew_point` (°C)
+        - `wind_speed` (km/h)
+        - `wind_deg` (degrees)
+        - `pressure` (hPa)
+        - `temperature` (°C)
+        - `humidity` (%)
+        - `temp_max` (°C)
+        
+        Note: 
+        - All other columns will be automatically dropped
+        - Week number will be calculated from timestamp
+        """)
+        
+        # Download sample template
+        sample_data = {
+            'timestamp': ['2023-01-01 00:00', '2023-01-01 01:00'],
+            'pm2.5': [25.0, 28.5],
+            'dew_point': [15.0, 15.5],
+            'wind_speed': [10.0, 10.5],
+            'wind_deg': [180, 182],
+            'pressure': [1013, 1012],
+            'temperature': [20.0, 20.5],
+            'humidity': [50, 52],
+            'temp_max': [25.0, 25.5]
+        }
+        sample_df = pd.DataFrame(sample_data)
+        csv = sample_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Sample CSV Template",
+            data=csv,
+            file_name="pm25_prediction_template.csv",
+            mime="text/csv"
+        )
 
 elif selected == "Interpretation":
     st.markdown("### :orange[Model Interpretation with LIME]")
