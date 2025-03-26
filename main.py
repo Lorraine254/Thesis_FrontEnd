@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 from streamlit_option_menu import option_menu
 import streamlit.components.v1 as components
-from data_preprocessing import (read_data,create_lag_features,train_test_split_data,model_load,display_model_results,download_objects,get_explainer)
-from visuals import *
+from data_preprocessing import (read_data,create_lag_features,train_test_split_data,load_models,display_model_results,download_objects,get_explainer,validate_nairobi_location,geocode_location)
+from visuals import (plot_model_results,get_aqi_category,get_aqi_color,display_forecast_results,get_aqi_category)
+import numpy as np
 import lime
 import lime.lime_tabular
 from lime import lime_tabular
@@ -13,13 +14,18 @@ import calendar
 import geopandas as gpd
 from libpysal import weights
 from esda import G_Local
+import joblib
+from datetime import timedelta, time
+import math
+import random
+import plotly.graph_objects as go
 
 
 # Page configuration
 st.set_page_config(page_title="Nairobi PM2.5 Prediction Tool", page_icon="🪂", layout="wide")
 
 
-model_path = 'all_models_metadata.pkl'
+model_path = 'all_models.pkl'
 note_book_path = 'model_building.html'
 
 
@@ -110,7 +116,7 @@ elif selected == "EDA":
         st.subheader("Data Quality Check")
         missing = df.isna().sum().to_frame("Missing Values")
         st.dataframe(missing[missing["Missing Values"] > 0])
-        st.caption("Note: Lag features may introduce missing values at start of time series")
+        #st.caption("Note: Lag features may introduce missing values at start of time series")
 
 
     with tab2:
@@ -154,9 +160,7 @@ elif selected == "EDA":
                             labels={'pm2.5': 'PM2.5 (μg/m³)', 'month_name': 'Month'})
         
         # Exact same styling as daily plot
-        fig_monthly.update_traces(
-            line=dict(width=2, color='blue')  # No markers to match daily
-        )
+        #fig_monthly.update_traces(line=dict(width=2, color='blue')  # No markers to match daily)
         
         st.plotly_chart(fig_monthly, use_container_width=True)
 
@@ -236,8 +240,8 @@ elif selected == "EDA":
         st.subheader("PM2.5 Hotspot Analysis (All Years Combined)")
 
         # Hypothesis Testing Explanation
-    with st.expander("🔍 About the Hotspot Analysis Method", expanded=True):
-        st.markdown("""
+        with st.expander("🔍 About the Hotspot Analysis Method", expanded=True):
+         st.markdown("""
         **Spatial Hypothesis Being Tested:**
         
         *Null Hypothesis (H₀):* PM2.5 concentrations are randomly distributed across space  
@@ -276,182 +280,182 @@ elif selected == "EDA":
         - Analysis uses a 1km neighborhood radius (threshold=0.01 decimal degrees)
         """)
     
-    try:
-        # Create sensor locations DataFrame
-        sensor_locations = {
-            'latitude': [-1.33, -1.327, -1.322, -1.32, -1.316, -1.316, -1.316, -1.316,
-                        -1.306, -1.306, -1.303, -1.303, -1.301, -1.3, -1.298, -1.297,
-                        -1.297, -1.296, -1.295, -1.295, -1.293, -1.292, -1.291, -1.291,
-                        -1.291, -1.29, -1.289, -1.288, -1.287, -1.283, -1.27, -1.267,
-                        -1.265, -1.261, -1.261, -1.26, -1.259, -1.253, -1.251, -1.239,
-                        -1.235, -1.22, -1.218, -1.215],
-            'longitude': [36.866, 36.882, 36.797, 36.885, 36.79, 36.793, 36.87, 36.872,
-                         36.733, 36.773, 36.789, 36.829, 36.754, 36.785, 36.791, 36.743,
-                         36.755, 36.776, 36.777, 36.86, 36.769, 36.821, 36.725, 36.733,
-                         36.781, 36.777, 36.825, 36.841, 36.811, 36.828, 36.801, 36.8,
-                         36.857, 36.772, 36.782, 36.793, 36.799, 36.854, 36.923, 36.791,
-                         36.854, 36.879, 36.887, 36.862],
-            'pm2.5_2018': [24.08, 62.11, 13.99, 72.08, 10.5, 20.31, 11.57, 12.33, 
-                          12.23, 12.22, 9.81, 12.93, 14.83, 9.57, 9.82, 9.17, 11.58, 
-                          7.9, 7.9, 17.05, 6.69, 10.09, 10.48, 13.99, 7.1, 7.63, 
-                          12.34, 20.18, 14.78, 13.05, 9.1, 8.67, 10.39, 9.93, 
-                          9.41, 6.52, 10.72, 4.38, 7.48, 9.85, 3.66, 0.56, 5.02, 6.88],
-            'pm2.5_2019': [4.4, 5.74, 8.89, 15.44, 8.45, 8.9, 5.24, 48.08, 
-                          8.75, 7.95, 7.04, 10.17, 7.88, 7.52, 16.12, 7.28, 7.14, 
-                          6.12, 6.12, 15.05, 1.56, 8.66, 16.82, 4.55, 5.3, 6.46, 
-                          9.66, 11.24, 15.75, 10.1, 8.0, 8.0, 10.65, 2.14, 
-                          4.33, 6.57, 6.89, 9.74, 9.33, 7.13, 10.08, 2.91, 1.1, 8.02],
-            'pm2.5_2020': [7.58, 6.43, 14.61, 7.4, 14.99, 13.71, 6.85, 6.9, 
-                          12.41, 29.08, 7.56, 13.49, 13.61, 9.58, 13.82, 8.86, 
-                          12.83, 10.34, 10.34, 15.16, 13.43, 8.78, 11.46, 11.46, 
-                          10.34, 8.83, 12.5, 24.13, 14.45, 14.82, 25.85, 25.28, 
-                          17.76, 19.83, 22.52, 21.86, 21.86, 16.82, 13.88, 19.03, 
-                          16.57, 15.67, 15.43, 16.17],
-            'pm2.5_2021': [9.87, 9.82, 19.87, 9.23, 18.61, 19.43, 5.28, 5.44, 
-                          34.16, 7.27, 17.98, 18.86, 25.3, 17.98, 16.25, 26.83, 
-                          26.49, 24.65, 25.19, 14.18, 27.0, 18.34, 52.64, 48.88, 
-                          24.65, 24.65, 18.78, 18.88, 20.83, 19.41, 24.53, 24.52, 
-                          20.32, 50.56, 21.52, 25.53, 25.53, 22.26, 21.97, 28.76, 
-                          23.78, 26.8, 27.21, 25.24],
-            'pm2.5_2022': [17.17, 17.96, 17.12, 17.9, 16.45, 16.87, 16.54, 16.57, 
-                          17.92, 14.57, 16.04, 20.04, 16.59, 16.04, 16.11, 19.3, 
-                          16.19, 13.54, 13.54, 21.74, 9.32, 11.1, 18.19, 18.19, 
-                          13.54, 13.54, 22.16, 21.88, 17.6, 20.02, 24.74, 24.17, 
-                          38.62, 21.0, 14.31, 18.82, 18.82, 31.55, 22.26, 10.17, 
-                          24.9, 22.89, 22.75, 22.58],
-            'pm2.5_2023': [47.81, 42.01, 18.78, 43.04, 15.68, 17.01, 54.92, 54.52, 
-                          22.54, 11.33, 9.52, 24.62, 20.63, 9.52, 5.91, 24.62, 
-                          21.23, 16.59, 16.04, 18.99, 16.27, 24.26, 23.28, 23.28, 
-                          16.04, 16.04, 20.71, 28.67, 23.74, 41.93, 12.51, 13.51, 
-                          32.9, 23.65, 20.99, 22.38, 22.38, 31.04, 29.79, 61.54, 
-                          30.01, 29.56, 29.49, 29.77],
-            'pm2.5_2024': [41.99, 38.03, 18.78, 38.71, 15.67, 16.31, 46.88, 46.6, 
-                          25.4, 17.28, 6.55, 19.71, 24.41, 6.55, 2.69, 28.02, 
-                          24.41, 16.84, 16.23, 18.39, 16.99, 25.81, 26.13, 26.13, 
-                          16.23, 16.23, 24.57, 29.12, 25.67, 40.07, 23.89, 23.89, 
-                          41.0, 22.43, 22.93, 23.01, 23.01, 36.11, 30.24, 23.79, 
-                          31.9, 30.32, 30.21, 30.2]
-        }
-        
-        hotspot_df = pd.DataFrame(sensor_locations)
-        
-        # Calculate average PM2.5 across all years for each location
-        pm_columns = [f'pm2.5_{year}' for year in range(2018, 2025)]
-        hotspot_df['pm2.5_avg'] = hotspot_df[pm_columns].mean(axis=1)
-        
-        # Remove any rows with NaN values
-        hotspot_df = hotspot_df.dropna(subset=['pm2.5_avg'])
-        
-        # Convert to GeoDataFrame
-        gdf = gpd.GeoDataFrame(
-            hotspot_df,
-            geometry=gpd.points_from_xy(hotspot_df.longitude, hotspot_df.latitude),
-            crs="EPSG:4326"
-        )
-        
-        # Create spatial weights matrix (1km neighborhood)
-        w = weights.DistanceBand.from_dataframe(gdf, threshold=0.01)
-        
-        # Perform Getis-Ord Gi* analysis
-        gi = G_Local(gdf['pm2.5_avg'].values, w, star=True)
-        
-        # Add results to DataFrame
-        gdf['gi_zscore'] = gi.z_sim
-        gdf['gi_pvalue'] = gi.p_sim
-        
-        # Replace NaN values in z-scores with 0
-        gdf['gi_zscore'] = gdf['gi_zscore'].fillna(0)
-        
-        # Classify hotspots and coldspots
-        gdf['hotspot'] = np.where(
-            (gdf['gi_zscore'] > 1.96) & (gdf['gi_pvalue'] < 0.05),
-            "Hotspot",
-            np.where(
-                (gdf['gi_zscore'] < -1.96) & (gdf['gi_pvalue'] < 0.05),
-                "Coldspot",
-                "Normal"
-            )
-        )
-        
-        # Create marker sizes - ensure no NaN values and scale appropriately
-        gdf['marker_size'] = np.abs(gdf['gi_zscore']).replace(np.nan, 0)
-        min_size, max_size = 5, 20
-        if gdf['marker_size'].max() > 0:
-            gdf['marker_size'] = min_size + (max_size - min_size) * (
-                (gdf['marker_size'] - gdf['marker_size'].min()) / 
-                (gdf['marker_size'].max() - gdf['marker_size'].min())
-            )    
-        
-        # Create layout
-        col_map, col_stats = st.columns([2, 1])
-        
-        with col_map:
-            # Interactive hotspot map
-            st.markdown("**Hotspot Map (All Years Average)**")
-            fig = px.scatter_mapbox(
-                gdf,
-                lat="latitude",
-                lon="longitude",
-                color="hotspot",
-                color_discrete_map={
-                    "Hotspot": "red",
-                    "Coldspot": "blue",
-                    "Normal": "black"
-                },
-                size="marker_size",
-                hover_data=["pm2.5_avg", "gi_zscore", "gi_pvalue"],
-                zoom=11,
-                height=500
-            )
-            fig.update_layout(
-                mapbox_style="open-street-map",
-                margin={"r":0,"t":0,"l":0,"b":0}
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col_stats:
-            # Statistics section
-            st.markdown("**Analysis Results**")
+        try:
+            # Create sensor locations DataFrame
+            sensor_locations = {
+                'latitude': [-1.33, -1.327, -1.322, -1.32, -1.316, -1.316, -1.316, -1.316,
+                            -1.306, -1.306, -1.303, -1.303, -1.301, -1.3, -1.298, -1.297,
+                            -1.297, -1.296, -1.295, -1.295, -1.293, -1.292, -1.291, -1.291,
+                            -1.291, -1.29, -1.289, -1.288, -1.287, -1.283, -1.27, -1.267,
+                            -1.265, -1.261, -1.261, -1.26, -1.259, -1.253, -1.251, -1.239,
+                            -1.235, -1.22, -1.218, -1.215],
+                'longitude': [36.866, 36.882, 36.797, 36.885, 36.79, 36.793, 36.87, 36.872,
+                            36.733, 36.773, 36.789, 36.829, 36.754, 36.785, 36.791, 36.743,
+                            36.755, 36.776, 36.777, 36.86, 36.769, 36.821, 36.725, 36.733,
+                            36.781, 36.777, 36.825, 36.841, 36.811, 36.828, 36.801, 36.8,
+                            36.857, 36.772, 36.782, 36.793, 36.799, 36.854, 36.923, 36.791,
+                            36.854, 36.879, 36.887, 36.862],
+                'pm2.5_2018': [24.08, 62.11, 13.99, 72.08, 10.5, 20.31, 11.57, 12.33, 
+                            12.23, 12.22, 9.81, 12.93, 14.83, 9.57, 9.82, 9.17, 11.58, 
+                            7.9, 7.9, 17.05, 6.69, 10.09, 10.48, 13.99, 7.1, 7.63, 
+                            12.34, 20.18, 14.78, 13.05, 9.1, 8.67, 10.39, 9.93, 
+                            9.41, 6.52, 10.72, 4.38, 7.48, 9.85, 3.66, 0.56, 5.02, 6.88],
+                'pm2.5_2019': [4.4, 5.74, 8.89, 15.44, 8.45, 8.9, 5.24, 48.08, 
+                            8.75, 7.95, 7.04, 10.17, 7.88, 7.52, 16.12, 7.28, 7.14, 
+                            6.12, 6.12, 15.05, 1.56, 8.66, 16.82, 4.55, 5.3, 6.46, 
+                            9.66, 11.24, 15.75, 10.1, 8.0, 8.0, 10.65, 2.14, 
+                            4.33, 6.57, 6.89, 9.74, 9.33, 7.13, 10.08, 2.91, 1.1, 8.02],
+                'pm2.5_2020': [7.58, 6.43, 14.61, 7.4, 14.99, 13.71, 6.85, 6.9, 
+                            12.41, 29.08, 7.56, 13.49, 13.61, 9.58, 13.82, 8.86, 
+                            12.83, 10.34, 10.34, 15.16, 13.43, 8.78, 11.46, 11.46, 
+                            10.34, 8.83, 12.5, 24.13, 14.45, 14.82, 25.85, 25.28, 
+                            17.76, 19.83, 22.52, 21.86, 21.86, 16.82, 13.88, 19.03, 
+                            16.57, 15.67, 15.43, 16.17],
+                'pm2.5_2021': [9.87, 9.82, 19.87, 9.23, 18.61, 19.43, 5.28, 5.44, 
+                            34.16, 7.27, 17.98, 18.86, 25.3, 17.98, 16.25, 26.83, 
+                            26.49, 24.65, 25.19, 14.18, 27.0, 18.34, 52.64, 48.88, 
+                            24.65, 24.65, 18.78, 18.88, 20.83, 19.41, 24.53, 24.52, 
+                            20.32, 50.56, 21.52, 25.53, 25.53, 22.26, 21.97, 28.76, 
+                            23.78, 26.8, 27.21, 25.24],
+                'pm2.5_2022': [17.17, 17.96, 17.12, 17.9, 16.45, 16.87, 16.54, 16.57, 
+                            17.92, 14.57, 16.04, 20.04, 16.59, 16.04, 16.11, 19.3, 
+                            16.19, 13.54, 13.54, 21.74, 9.32, 11.1, 18.19, 18.19, 
+                            13.54, 13.54, 22.16, 21.88, 17.6, 20.02, 24.74, 24.17, 
+                            38.62, 21.0, 14.31, 18.82, 18.82, 31.55, 22.26, 10.17, 
+                            24.9, 22.89, 22.75, 22.58],
+                'pm2.5_2023': [47.81, 42.01, 18.78, 43.04, 15.68, 17.01, 54.92, 54.52, 
+                            22.54, 11.33, 9.52, 24.62, 20.63, 9.52, 5.91, 24.62, 
+                            21.23, 16.59, 16.04, 18.99, 16.27, 24.26, 23.28, 23.28, 
+                            16.04, 16.04, 20.71, 28.67, 23.74, 41.93, 12.51, 13.51, 
+                            32.9, 23.65, 20.99, 22.38, 22.38, 31.04, 29.79, 61.54, 
+                            30.01, 29.56, 29.49, 29.77],
+                'pm2.5_2024': [41.99, 38.03, 18.78, 38.71, 15.67, 16.31, 46.88, 46.6, 
+                            25.4, 17.28, 6.55, 19.71, 24.41, 6.55, 2.69, 28.02, 
+                            24.41, 16.84, 16.23, 18.39, 16.99, 25.81, 26.13, 26.13, 
+                            16.23, 16.23, 24.57, 29.12, 25.67, 40.07, 23.89, 23.89, 
+                            41.0, 22.43, 22.93, 23.01, 23.01, 36.11, 30.24, 23.79, 
+                            31.9, 30.32, 30.21, 30.2]
+            }
             
-            hotspots = gdf[gdf['hotspot'] == "Hotspot"]
-            coldspots = gdf[gdf['hotspot'] == "Coldspot"]
+            hotspot_df = pd.DataFrame(sensor_locations)
             
-            st.metric("Significant Hotspots", len(hotspots))
-            st.metric("Significant Coldspots", len(coldspots))
+            # Calculate average PM2.5 across all years for each location
+            pm_columns = [f'pm2.5_{year}' for year in range(2018, 2025)]
+            hotspot_df['pm2.5_avg'] = hotspot_df[pm_columns].mean(axis=1)
             
-            if not hotspots.empty:
-                st.markdown("**Top Hotspot Locations**")
-                st.dataframe(
-                    hotspots.nlargest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
-                    hide_index=True
+            # Remove any rows with NaN values
+            hotspot_df = hotspot_df.dropna(subset=['pm2.5_avg'])
+            
+            # Convert to GeoDataFrame
+            gdf = gpd.GeoDataFrame(
+                hotspot_df,
+                geometry=gpd.points_from_xy(hotspot_df.longitude, hotspot_df.latitude),
+                crs="EPSG:4326"
+            )
+            
+            # Create spatial weights matrix (1km neighborhood)
+            w = weights.DistanceBand.from_dataframe(gdf, threshold=0.01)
+            
+            # Perform Getis-Ord Gi* analysis
+            gi = G_Local(gdf['pm2.5_avg'].values, w, star=True)
+            
+            # Add results to DataFrame
+            gdf['gi_zscore'] = gi.z_sim
+            gdf['gi_pvalue'] = gi.p_sim
+            
+            # Replace NaN values in z-scores with 0
+            gdf['gi_zscore'] = gdf['gi_zscore'].fillna(0)
+            
+            # Classify hotspots and coldspots
+            gdf['hotspot'] = np.where(
+                (gdf['gi_zscore'] > 1.96) & (gdf['gi_pvalue'] < 0.05),
+                "Hotspot",
+                np.where(
+                    (gdf['gi_zscore'] < -1.96) & (gdf['gi_pvalue'] < 0.05),
+                    "Coldspot",
+                    "Normal"
                 )
+            )
             
-            if not coldspots.empty:
-                st.markdown("**Top Coldspot Locations**")
+            # Create marker sizes - ensure no NaN values and scale appropriately
+            gdf['marker_size'] = np.abs(gdf['gi_zscore']).replace(np.nan, 0)
+            min_size, max_size = 5, 20
+            if gdf['marker_size'].max() > 0:
+                gdf['marker_size'] = min_size + (max_size - min_size) * (
+                    (gdf['marker_size'] - gdf['marker_size'].min()) / 
+                    (gdf['marker_size'].max() - gdf['marker_size'].min())
+                )    
+            
+            # Create layout
+            col_map, col_stats = st.columns([2, 1])
+            
+            with col_map:
+                # Interactive hotspot map
+                st.markdown("**Hotspot Map (All Years Average)**")
+                fig = px.scatter_mapbox(
+                    gdf,
+                    lat="latitude",
+                    lon="longitude",
+                    color="hotspot",
+                    color_discrete_map={
+                        "Hotspot": "red",
+                        "Coldspot": "blue",
+                        "Normal": "black"
+                    },
+                    size="marker_size",
+                    hover_data=["pm2.5_avg", "gi_zscore", "gi_pvalue"],
+                    zoom=11,
+                    height=500
+                )
+                fig.update_layout(
+                    mapbox_style="open-street-map",
+                    margin={"r":0,"t":0,"l":0,"b":0}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col_stats:
+                # Statistics section
+                st.markdown("**Analysis Results**")
+                
+                hotspots = gdf[gdf['hotspot'] == "Hotspot"]
+                coldspots = gdf[gdf['hotspot'] == "Coldspot"]
+                
+                st.metric("Significant Hotspots", len(hotspots))
+                st.metric("Significant Coldspots", len(coldspots))
+                
+                if not hotspots.empty:
+                    st.markdown("**Top Hotspot Locations**")
+                    st.dataframe(
+                        hotspots.nlargest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
+                        hide_index=True
+                    )
+                
+                if not coldspots.empty:
+                    st.markdown("**Top Coldspot Locations**")
+                    st.dataframe(
+                        coldspots.nsmallest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
+                        hide_index=True
+                    )
+            
+            # Full results expander
+            with st.expander("View Complete Analysis Data"):
                 st.dataframe(
-                    coldspots.nsmallest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
-                    hide_index=True
+                    gdf.sort_values('gi_zscore', ascending=False)[
+                        ['latitude', 'longitude', 'pm2.5_avg', 'hotspot', 'gi_zscore', 'gi_pvalue']
+                    ],
+                    column_config={
+                        "gi_zscore": st.column_config.NumberColumn("Z-Score", format="%.2f"),
+                        "gi_pvalue": st.column_config.NumberColumn("P-Value", format="%.4f"),
+                        "pm2.5_avg": st.column_config.NumberColumn("Avg PM2.5", format="%.2f μg/m³")
+                    },
+                    height=300
                 )
         
-        # Full results expander
-        with st.expander("View Complete Analysis Data"):
-            st.dataframe(
-                gdf.sort_values('gi_zscore', ascending=False)[
-                    ['latitude', 'longitude', 'pm2.5_avg', 'hotspot', 'gi_zscore', 'gi_pvalue']
-                ],
-                column_config={
-                    "gi_zscore": st.column_config.NumberColumn("Z-Score", format="%.2f"),
-                    "gi_pvalue": st.column_config.NumberColumn("P-Value", format="%.4f"),
-                    "pm2.5_avg": st.column_config.NumberColumn("Avg PM2.5", format="%.2f μg/m³")
-                },
-                height=300
-            )
-    
-    except ImportError as e:
-        st.error(f"Required packages not found: {str(e)}")
-        st.info("Install with: pip install geopandas libpysal esda plotly")
-    except Exception as e:
-        st.error(f"Analysis error: {str(e)}")
+        except ImportError as e:
+            st.error(f"Required packages not found: {str(e)}")
+            st.info("Install with: pip install geopandas libpysal esda plotly")
+        except Exception as e:
+            st.error(f"Analysis error: {str(e)}")
 
 
     
@@ -467,7 +471,7 @@ elif selected == "Models":
         st.write("Target (y_train):")
         st.dataframe(y_train)
     
-    loaded_models, loaded_model_results = model_load()
+    loaded_models, loaded_model_results,models_metadata = load_models()
     
     if not loaded_models:
         st.warning("No models loaded successfully")
@@ -486,75 +490,75 @@ elif selected == "Models":
             st.plotly_chart(plot_model_results(df, 'r2'), use_container_width=True)
             st.caption("Higher R² values indicate better fit (1.0 is perfect)")
     
-    # Individual model details
-    for model_name, model in loaded_models.items():
-        with st.expander(f"{model_name} Details", expanded=False):
-            # Find corresponding results
-            model_result = next((r for r in loaded_model_results if r['model_name'] == model_name), None)
+    # # Individual model details
+    # for model_name, model in loaded_models.items():
+    #     with st.expander(f"{model_name} Details", expanded=False):
+    #         # Find corresponding results
+    #         model_result = next((r for r in loaded_model_results if r['model_name'] == model_name), None)
             
-            # Display metrics
-            if model_result:
-                cols = st.columns(2)
-                with cols[0]:
-                    st.subheader("Training Performance")
-                    st.metric("RMSE", f"{model_result['train_rmse']:.3f}",
-                             help="Root Mean Squared Error on training data")
-                    st.metric("R²", f"{model_result['train_r2']:.3f}",
-                             help="Variance explained on training data (0-1 scale)")
+    #         # Display metrics
+    #         if model_result:
+    #             cols = st.columns(2)
+    #             with cols[0]:
+    #                 st.subheader("Training Performance")
+    #                 st.metric("RMSE", f"{model_result['train_rmse']:.3f}",
+    #                          help="Root Mean Squared Error on training data")
+    #                 st.metric("R²", f"{model_result['train_r2']:.3f}",
+    #                          help="Variance explained on training data (0-1 scale)")
                     
-                    # Training data predictions plot
-                    y_train_pred = model.predict(X_train)
-                    fig_train = px.scatter(
-                        x=y_train,
-                        y=y_train_pred,
-                        labels={'x': 'Actual', 'y': 'Predicted'},
-                        title=f"{model_name} Training Predictions"
-                    )
-                    fig_train.add_shape(type='line', x0=y_train.min(), y0=y_train.min(),
-                                      x1=y_train.max(), y1=y_train.max())
-                    st.plotly_chart(fig_train, use_container_width=True)
+    #                 # Training data predictions plot
+    #                 y_train_pred = model.predict(X_train)
+    #                 fig_train = px.scatter(
+    #                     x=y_train,
+    #                     y=y_train_pred,
+    #                     labels={'x': 'Actual', 'y': 'Predicted'},
+    #                     title=f"{model_name} Training Predictions"
+    #                 )
+    #                 fig_train.add_shape(type='line', x0=y_train.min(), y0=y_train.min(),
+    #                                   x1=y_train.max(), y1=y_train.max())
+    #                 st.plotly_chart(fig_train, use_container_width=True)
                 
-                with cols[1]:
-                    st.subheader("Test Performance")
-                    if model_result['test_rmse'] is not None:
-                        st.metric("RMSE", f"{model_result['test_rmse']:.3f}",
-                                 help="Root Mean Squared Error on test data")
-                        st.metric("R²", f"{model_result['test_r2']:.3f}",
-                                 help="Variance explained on test data (0-1 scale)")
+    #             with cols[1]:
+    #                 st.subheader("Test Performance")
+    #                 if model_result['test_rmse'] is not None:
+    #                     st.metric("RMSE", f"{model_result['test_rmse']:.3f}",
+    #                              help="Root Mean Squared Error on test data")
+    #                     st.metric("R²", f"{model_result['test_r2']:.3f}",
+    #                              help="Variance explained on test data (0-1 scale)")
                         
-                        # Test data predictions plot
-                        y_test_pred = model.predict(X_test)
-                        fig_test = px.scatter(
-                            x=y_test,
-                            y=y_test_pred,
-                            labels={'x': 'Actual', 'y': 'Predicted'},
-                            title=f"{model_name} Test Predictions"
-                        )
-                        fig_test.add_shape(type='line', x0=y_test.min(), y0=y_test.min(),
-                                          x1=y_test.max(), y1=y_test.max())
-                        st.plotly_chart(fig_test, use_container_width=True)
-                    else:
-                        st.warning("Test metrics not available")
+    #                     # Test data predictions plot
+    #                     y_test_pred = model.predict(X_test)
+    #                     fig_test = px.scatter(
+    #                         x=y_test,
+    #                         y=y_test_pred,
+    #                         labels={'x': 'Actual', 'y': 'Predicted'},
+    #                         title=f"{model_name} Test Predictions"
+    #                     )
+    #                     fig_test.add_shape(type='line', x0=y_test.min(), y0=y_test.min(),
+    #                                       x1=y_test.max(), y1=y_test.max())
+    #                     st.plotly_chart(fig_test, use_container_width=True)
+    #                 else:
+    #                     st.warning("Test metrics not available")
             
-            # Feature importance
-            if model_result and model_result.get('feature_importance'):
-                st.subheader("Feature Importance")
-                importance_df = pd.DataFrame(
-                    model_result['feature_importance'].items(),
-                    columns=['Feature', 'Importance']
-                ).sort_values('Importance', ascending=False)
+    #         # Feature importance
+    #         if model_result and model_result.get('feature_importance'):
+    #             st.subheader("Feature Importance")
+    #             importance_df = pd.DataFrame(
+    #                 model_result['feature_importance'].items(),
+    #                 columns=['Feature', 'Importance']
+    #             ).sort_values('Importance', ascending=False)
                 
-                tab1, tab2 = st.tabs(["Chart", "Table"])
-                with tab1:
-                    st.bar_chart(importance_df.set_index('Feature'))
-                with tab2:
-                    st.dataframe(importance_df.style.format({'Importance': '{:.3f}'}))
+    #             tab1, tab2 = st.tabs(["Chart", "Table"])
+    #             with tab1:
+    #                 st.bar_chart(importance_df.set_index('Feature'))
+    #             with tab2:
+    #                 st.dataframe(importance_df.style.format({'Importance': '{:.3f}'}))
     
-    # Notebook display
-    with st.expander("Learn how the model was trained?", expanded=False):
-        with open(note_book_path, 'r', encoding='utf-8') as f:
-            html_data = f.read()
-        components.html(html_data, height=1000, width=800, scrolling=True)
+    # # Notebook display
+    # with st.expander("Learn how the model was trained?", expanded=False):
+    #     with open(note_book_path, 'r', encoding='utf-8') as f:
+    #         html_data = f.read()
+    #     components.html(html_data, height=1000, width=800, scrolling=True)
     
     # Download section
     st.sidebar.markdown("### Download")
@@ -578,179 +582,189 @@ elif selected == "Models":
                 file_name="model_training.ipynb"
             )
 
+
+
 elif selected == "Prediction":
-    st.markdown("### :orange[PM2.5 Concentration Prediction Page]")
+    st.markdown("### :orange[24-Hour PM2.5 Forecast]")
     
     # Load models
-    loaded_models, _ = model_load()
+    loaded_models, loaded_model_results, models_metadata  = load_models()
     
-    # File upload section
-    uploaded_file = st.file_uploader("Upload your PM2.5 data (CSV format)", type="csv")
-    
-    if uploaded_file is not None:
-        try:
-            # Define the exact columns we will use (all compulsory)
-            required_columns = [
-                'timestamp', 'pm2.5', 'dew_point', 'wind_speed',
-                'wind_deg', 'pressure', 'temperature', 'humidity', 'temp_max'
+    # Display metrics based on model choice
+    model_choice = st.selectbox("Select model", ["XGBoost", "LightGBM", "Hybrid"])
+
+    if model_choice == "LightGBM":
+            # Use the pre-calculated metrics from lgbm_metadata
+            if 'lgbm_metadata' in models_metadata and 'test_metrics' in models_metadata['lgbm_metadata']:
+                st.metric("Test RMSE", f"{models_metadata['lgbm_metadata']['test_metrics']['rmse']:.2f}")
+            else:
+                # Fallback to our freshly calculated metrics
+                lgb_result = next((r for r in loaded_model_results if r['model_name'] == 'LightGBM'), None)
+                if lgb_result:
+                    st.metric("Test RMSE", f"{lgb_result['test_rmse']:.2f}")
+
+    elif model_choice == "XGBoost":
+            xgb_result = next((r for r in loaded_model_results if r['model_name'] == 'XGBoost'), None)
+            if xgb_result:
+                st.metric("Test RMSE", f"{xgb_result['test_rmse']:.2f}")
+
+    elif model_choice == "Hybrid":
+            hybrid_result = next((r for r in loaded_model_results if r['model_name'] == 'Stacked_model'), None)
+            if hybrid_result:
+                st.metric("Test RMSE", f"{hybrid_result['test_rmse']:.2f}")
+
+    with st.form("forecast_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Date and time selection
+            forecast_date = st.date_input("Forecast date", 
+                                       min_value=datetime.now().date(),
+                                       max_value=datetime.now().date() + timedelta(days=7))
+            start_hour = st.slider("Starting hour", 0, 23, datetime.now().hour)
+            
+            # Location input options
+            location_method = st.radio("Location input method:",
+                                     ["Coordinates", "Place Name"],
+                                     horizontal=True)
+            
+            if location_method == "Coordinates":
+                lat = st.number_input("Latitude (-1.47 to -1.15)", 
+                                    min_value=-1.47, max_value=-1.15, value=-1.2864)
+                lon = st.number_input("Longitude (36.65 to 37.05)", 
+                                   min_value=36.65, max_value=37.05, value=36.8172)
+            else:
+                location_name = st.text_input("Enter place name in Nairobi", "Westlands")
+                if st.button("Geocode Location"):
+                    coords = geocode_location(location_name)
+                    if coords:
+                        lat, lon = coords
+                        st.success(f"Found coordinates: {lat:.4f}, {lon:.4f}")
+                    else:
+                        st.error("Could not find location. Please try different name or use coordinates.")
+                        st.stop()
+        
+        with col2:
+            # PM2.5 history input
+            st.markdown("#### Last 5 Hours PM2.5 Readings")
+            pm_history = [
+                st.number_input(f"{i} hour ago (µg/m³)", 
+                              min_value=0.0, 
+                              max_value=50.0, 
+                              value=15.0,
+                              key=f"pm_{i}")
+                for i in range(5, 0, -1)
             ]
-            
-            # Read only the columns we need
-            df = pd.read_csv(uploaded_file, usecols=lambda col: col in required_columns)
-            
-            # Verify we have all required columns
-            missing_cols = [col for col in required_columns if col not in df.columns]
-            if missing_cols:
-                st.error(f"Missing required columns: {', '.join(missing_cols)}")
-                st.stop()
-            
-            # Convert timestamp and extract temporal features
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['hour'] = df['timestamp'].dt.hour
-            df['year'] = df['timestamp'].dt.year
-            df['week'] = df['timestamp'].dt.isocalendar().week
-            
-            # Create lag features
-            df = create_lag_features(df, lag=5)
-            
-            # Show preview of processed data
-            with st.expander("Preview Processed Data", expanded=False):
-                st.dataframe(df.head())
-                st.write(f"Data shape: {df.shape}")
-                st.write(f"Columns used: {', '.join(df.columns)}")
-            
-            # Select which timestamp to predict
-            timestamps = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M').tolist()
-            selected_idx = st.selectbox(
-                "Select time point for prediction",
-                options=range(len(timestamps)),
-                format_func=lambda x: timestamps[x]
-            )
-            
-            if st.button("Predict PM2.5"):
-                # Prepare input data with only the features the model expects
-                model_features = [
-                    'lag_1', 'lag_2', 'hour', 'year', 'lag_5', 'lag_3', 'lag_4',
-                    'dew_point', 'wind_speed', 'wind_deg', 'pressure', 'week',
-                    'temperature', 'humidity', 'temp_max'
-                ]
-                input_data = df.iloc[[selected_idx]][model_features]
+        
+        if st.form_submit_button("Generate 24-Hour Forecast"):
+            try:
+                # Validate location
+                if not validate_nairobi_location(lat, lon):
+                    st.error("Coordinates must be within Nairobi boundaries")
+                    st.stop()
                 
-                # Make predictions with all models
-                predictions = {}
-                for model_name, model in loaded_models.items():
-                    try:
-                        pred = model.predict(input_data)
-                        predictions[model_name] = float(pred[0])
-                    except Exception as e:
-                        st.error(f"Error predicting with {model_name}: {str(e)}")
-                        predictions[model_name] = None
+                # Validate PM history
+                if any(pm is None for pm in pm_history):
+                    st.warning("Please provide all historical PM2.5 values")
+                    st.stop()
+                
+                # Generate timeline
+                base_time = datetime.combine(forecast_date, time(start_hour, 0))
+                hours = [base_time + timedelta(hours=i) for i in range(24)]
+                
+                # Get weather forecast - implement your actual API call here
+                def fetch_nairobi_weather(lat, lon, target_time):
+                    """Mock weather data - replace with real API call"""
+                    return {
+                        'dew_point': 15.0 + 5*math.sin(target_time.hour/24*2*math.pi),
+                        'wind_speed': 3.0 + random.uniform(-1, 1),
+                        'wind_deg': random.randint(0, 360),
+                        'pressure': 1013 + random.randint(-10, 10),
+                        'temperature': 20.0 + 10*math.sin(target_time.hour/24*2*math.pi),
+                        'humidity': 50 + int(20*math.sin(target_time.hour/12*math.pi)),
+                        'temp_max': 25.0 + 5*math.sin(target_time.hour/24*2*math.pi)
+                    }
+                # Get feature names - fallback to default if not in metadata
+                if 'features' in models_metadata:
+                        feature_columns = models_metadata['features']
+                else:
+                    # Default feature columns based on your training data
+                    feature_columns = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 
+                                        'hour', 'week', 'year', 'dew_point', 'wind_speed',
+                                        'wind_deg', 'pressure', 'feels_like', 'humidity', 'temp_max']
+                    
+                
+                # Generate predictions
+                predictions = []
+                current_lags = pm_history.copy()
+                
+                with st.spinner("Generating 24-hour forecast..."):
+                    for hour in hours:
+                        # Get weather
+                        weather = fetch_nairobi_weather(lat, lon, hour)
+                        
+                        # Prepare features
+                        features = {
+                            'lag_1': current_lags[-1],
+                            'lag_2': current_lags[-2],
+                            'lag_3': current_lags[-3],
+                            'lag_4': current_lags[-4],
+                            'lag_5': current_lags[-5],
+                            'hour': hour.hour,
+                            'week': hour.isocalendar()[1],
+                            'year': hour.year,
+                            **weather
+                        }
+                        
+                        # Select the appropriate model based on user choice
+                        if model_choice == "LightGBM":
+                            model = loaded_models['LightGBM']
+                            model_upper = models_metadata['lgb_upper']
+                            model_lower = models_metadata['lgb_lower']
+                        elif model_choice == "XGBoost":
+                            model = loaded_models['XGBoost']
+                            # For XGBoost, you might not have upper/lower bounds
+                            model_upper = model  # Or implement your own bounds
+                            model_lower = model
+                        else:  # Hybrid
+                            model = loaded_models['Stacked_model']
+                            # For Hybrid, you might not have upper/lower bounds
+                            model_upper = model
+                            model_lower = model
+                        
+                        # Make prediction
+                        input_df = pd.DataFrame([features])[models_metadata['features']]
+                        pred = model.predict(input_df)[0]
+                        
+                        # Only calculate bounds if models exist
+                        pred_upper = model_upper.predict(input_df)[0] if model_upper else pred
+                        pred_lower = model_lower.predict(input_df)[0] if model_lower else pred
+                        
+                        predictions.append({
+                            'timestamp': hour.strftime('%Y-%m-%d %H:%M'),
+                            'prediction': pred,
+                            'upper_bound': pred_upper,
+                            'lower_bound': pred_lower,
+                            'aqi_category': get_aqi_category(pred)
+                        })
+                        
+                        # Update lags
+                        current_lags.pop(0)
+                        current_lags.append(pred)
                 
                 # Display results
-                st.markdown("## Prediction Results")
-                cols = st.columns(len(loaded_models))
+                display_forecast_results(pd.DataFrame(predictions))
                 
-                for (model_name, prediction), col in zip(predictions.items(), cols):
-                    with col:
-                        st.markdown(f"### {model_name}")
-                        if prediction is not None:
-                            # PM2.5 concentration categories
-                            if prediction < 12:
-                                status = "Good"
-                                color = "green"
-                            elif prediction < 35:
-                                status = "Moderate"
-                                color = "blue"
-                            elif prediction < 55:
-                                status = "Unhealthy for Sensitive Groups"
-                                color = "orange"
-                            elif prediction < 150:
-                                status = "Unhealthy"
-                                color = "red"
-                            elif prediction < 250:
-                                status = "Very Unhealthy"
-                                color = "purple"
-                            else:
-                                status = "Hazardous"
-                                color = "maroon"
-                            
-                            st.metric("PM2.5 Concentration", 
-                                    f"{prediction:.2f} μg/m³",
-                                    help=f"AQI Category: {status}")
-                            st.markdown(f":{color}[**{status}**]")
-                            
-                            # Health impact interpretation
-                            health_impacts = {
-                                "Good": "Air quality is satisfactory with little health risk.",
-                                "Moderate": "Acceptable air quality, but some pollutants may affect sensitive individuals.",
-                                "Unhealthy for Sensitive Groups": "Members of sensitive groups may experience health effects.",
-                                "Unhealthy": "Everyone may begin to experience health effects.",
-                                "Very Unhealthy": "Health alert: everyone may experience serious health effects.",
-                                "Hazardous": "Health warning of emergency conditions."
-                            }
-                            st.info(health_impacts[status])
-                        else:
-                            st.warning("Prediction failed")
-                
-                # Add visualization
-                st.markdown("---")
-                st.markdown("### Prediction Comparison")
-                pred_df = pd.DataFrame.from_dict(predictions, orient='index', columns=['PM2.5'])
-                st.bar_chart(pred_df)
-                
-                # Show input features used
-                with st.expander("View Input Features Used"):
-                    st.dataframe(input_data)
-        
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-    
-    else:
-        st.info("Please upload a CSV file to begin prediction")
-        st.markdown("""
-        **Required CSV Columns (all compulsory):**
-        - `timestamp` (YYYY-MM-DD HH:MM)
-        - `pm2.5` (μg/m³)
-        - `dew_point` (°C)
-        - `wind_speed` (km/h)
-        - `wind_deg` (degrees)
-        - `pressure` (hPa)
-        - `temperature` (°C)
-        - `humidity` (%)
-        - `temp_max` (°C)
-        
-        Note: 
-        - All other columns will be automatically dropped
-        - Week number will be calculated from timestamp
-        """)
-        
-        # Download sample template
-        sample_data = {
-            'timestamp': ['2023-01-01 00:00', '2023-01-01 01:00'],
-            'pm2.5': [25.0, 28.5],
-            'dew_point': [15.0, 15.5],
-            'wind_speed': [10.0, 10.5],
-            'wind_deg': [180, 182],
-            'pressure': [1013, 1012],
-            'temperature': [20.0, 20.5],
-            'humidity': [50, 52],
-            'temp_max': [25.0, 25.5]
-        }
-        sample_df = pd.DataFrame(sample_data)
-        csv = sample_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Sample CSV Template",
-            data=csv,
-            file_name="pm25_prediction_template.csv",
-            mime="text/csv"
-        )
+            except Exception as e:
+                st.error(f"Forecast generation failed: {str(e)}")
+
 
 elif selected == "Interpretation":
     st.markdown("### :orange[Model Interpretation with LIME]")
     
     # Load data and models
     data = read_data()
-    loaded_models, _ = model_load()
+    loaded_models, loaded_model_results, models_metadata  = load_models()
     X_train, _, X_test, _, _, y_test = train_test_split_data(data)
     
     if not loaded_models:
