@@ -25,18 +25,20 @@ with st.sidebar:
                              "nav-link-selected": {"background-color": "green"},
                          })
     
-    with st.expander("❓ Guide"):
-        st.write("""
-        **Steps**:  
-        1. Select date/hour  
-        2. Enter PM2.5 history  
-        3. Generate forecast  
+    with st.expander("❓ How to Use This Tool"):
+        st.markdown("""
+        1. **Navigate to the prediction tab.**
+        2. **Choose your forecast start date (default: today)**  
+        3. **Select start hour (24-hour format)** 
+        4. **Enter PM₂.₅ measurements from the last 5 hours (in µg/m³)**  
+        5. Click **Generate Forecast**  
         """)
         st.table(pd.DataFrame({
             "AQI Category": ["Good", "Moderate", "Unhealthy", "Very Unhealthy", "Hazardous"],
             "PM2.5 Range": ["0-12", "12-35", "35-55", "55-150", "250+"],
             "Color": ["🟢", "🟡", "🟠", "🔴", "🟤"]
         }))
+        
 
 if selected == "Home":
     st.title("PM2.5 Forecasting System")
@@ -44,6 +46,7 @@ if selected == "Home":
     ### Nairobi Air Quality Prediction
     This system provides 24-hour PM2.5 forecasts with confidence intervals.
     """)
+    
     
     st.subheader(":orange[Air Quality Sensor Network]")
     
@@ -85,31 +88,30 @@ elif selected == "Prediction":
     
     # Compact form with border
     with st.form('pm25_form', border=True):
-        with st.expander("⚙️ Forecast Settings", expanded=True):
-            col1, col2 = st.columns(2)
+        # Date and Hour Input section (formerly in expander)
+        col1, col2 = st.columns(2)
         
-            with col1:
-                # Enhanced date input with tomorrow as default
-                min_date = today
-                max_date = today + timedelta(days=5)  # 5-day forecast limit
-                default_date = today + timedelta(days=1)  # Default to tomorrow
-                
-                forecast_date = st.date_input(
-                    "Forecast date (max 5 days ahead)",
-                    min_value=min_date,
-                    max_value=max_date,
-                    value=default_date,
-                    help="Weather data available for up to 5 days in advance"
-                )
-                
-                # Show warning if trying to forecast beyond API limits
-                if forecast_date > today + timedelta(days=5):
-                    st.warning("Note: Forecasts beyond 5 days will use simulated weather patterns")
-
-                start_hour = st.slider("Starting hour", 0, 23, 8)  # Default to 8 AM
+        with col1:
+            # Enhanced date input with tomorrow as default
+            min_date = today
+            max_date = today + timedelta(days=5)  # 5-day forecast limit
+            default_date = today   # Default to today
             
-        with col2: 
+            forecast_date = st.date_input(
+                "Choose your forecast start date (any date from today through [today + 5 days]:",
+                min_value=min_date,
+                max_value=max_date,
+                value=default_date,
+                help="Weather data available for up to 5 days in advance"
+            )
+            
+            # Show warning if trying to forecast beyond API limits
+            if forecast_date > today + timedelta(days=5):
+                st.warning("Note: Forecast limited to 5 days ahead")
 
+            start_hour = st.slider("Choose the starting hour:", 0, 23, 8, help="Use the 24-hour clock system")  # Default to 8 AM
+        
+        with col2: 
             # Weather data handling
             if forecast_date == today + timedelta(days=1):  # If forecasting tomorrow
                 st.info("""
@@ -119,102 +121,101 @@ elif selected == "Prediction":
                 """)
         
         # Location display (fixed to Nairobi)
-        st.markdown(f"**Location:** Nairobi (Lat: {NAIROBI_COORDS[0]:.4f}, Lon: {NAIROBI_COORDS[1]:.4f})")
+        # st.markdown(f"**Location:** Nairobi (Lat: {NAIROBI_COORDS[0]:.4f}, Lon: {NAIROBI_COORDS[1]:.4f})")
         
-        # PM2.5 history inputs
-        with st.expander("📊 Enter Historical PM2.5 Data", expanded=True):
-            st.markdown("**Last 5 Hours PM2.5 Readings**")
-            pm_cols = st.columns(5)
-            pm_history = []
-            for i, col in enumerate(pm_cols, 1):
-                with col:
-                    pm_history.append(
-                        st.number_input(f"{i} hour ago", 
-                                    min_value=0.0, 
-                                    max_value=500.0, 
-                                    value=15.0,
-                                    key=f"pm_{i}")
-                    )
+        # PM2.5 history inputs (formerly in expander)
+        st.markdown("**Enter PM2.5 measurements from the last 5 hours (in µg/m³)**")
+        pm_cols = st.columns(5)
+        pm_history = []
+        for i, col in enumerate(pm_cols, 1):
+            with col:
+                pm_history.append(
+                    st.number_input(f"{i} hour ago", 
+                                min_value=0.0, 
+                                max_value=100.0, 
+                                value=15.0,
+                                key=f"pm_{i}")
+                )
         
         submitted = st.form_submit_button("Generate Forecast")
-        
-        if submitted:
-            try:
-                # Get weather data (either current or forecast)
-                if forecast_date == today + timedelta(days=1):  # Tomorrow's forecast
-                    current_weather = fetch_weather(*NAIROBI_COORDS, datetime.now())
-                    forecast_weather = fetch_weather(*NAIROBI_COORDS, 
-                                                  datetime.combine(forecast_date, time(start_hour, 0)))
-                    weather = {
-                        **current_weather,
-                        **{k: forecast_weather[k] for k in ['temperature', 'wind_speed', 'humidity']}
+
+    if submitted:
+        try:
+            # Get weather data (either current or forecast)
+            if forecast_date == today + timedelta(days=1):  # Tomorrow's forecast
+                current_weather = fetch_weather(*NAIROBI_COORDS, datetime.now())
+                forecast_weather = fetch_weather(*NAIROBI_COORDS, 
+                                              datetime.combine(forecast_date, time(start_hour, 0)))
+                weather = {
+                    **current_weather,
+                    **{k: forecast_weather[k] for k in ['temperature', 'wind_speed', 'humidity']}
+                }
+            else:  # Today or other dates
+                weather = fetch_weather(*NAIROBI_COORDS, datetime.combine(forecast_date, time(start_hour, 0)))
+                if weather.get('data_source') == 'Simulated Data':
+                    st.error("⚠️ Using simulated weather data (API unavailable)")
+                else:
+                    st.success("✅ Live weather data loaded")
+            
+            # API status feedback
+            if weather.get('data_source', '').startswith('OpenWeatherMap'):
+                st.toast("🌐 Data successfully retrieved from API", icon="✅")
+            
+            base_time = datetime.combine(forecast_date, time(start_hour, 0))
+            hours = [base_time + timedelta(hours=i) for i in range(24)]
+            
+            predictions = []
+            current_lags = pm_history.copy()
+            
+            with st.spinner("Generating forecast..."):
+                progress_bar = st.progress(0)
+
+                for i, hour in enumerate(hours):
+                    # Use the weather data we already fetched
+                    features = {
+                        'lag_1': current_lags[-1],
+                        'lag_2': current_lags[-2],
+                        'lag_3': current_lags[-3],
+                        'lag_4': current_lags[-4],
+                        'lag_5': current_lags[-5],
+                        'hour': hour.hour,
+                        'week': hour.isocalendar()[1],
+                        'year': hour.year,
+                        'dew_point': weather['dew_point'],
+                        'wind_speed': weather['wind_speed'],
+                        'wind_deg': weather['wind_deg'],
+                        'pressure': weather['pressure'],
+                        'humidity': weather['humidity'],
+                        'temperature': weather['temperature'],
+                        'temp_max': weather['temp_max']
                     }
-                else:  # Today or other dates
-                    weather = fetch_weather(*NAIROBI_COORDS, datetime.combine(forecast_date, time(start_hour, 0)))
-                    if weather.get('data_source') == 'Simulated Data':
-                        st.error("⚠️ Using simulated weather data (API unavailable)")
-                    else:
-                        st.success("✅ Live weather data loaded")
-                
-                # API status feedback
-                if weather.get('data_source', '').startswith('OpenWeatherMap'):
-                    st.toast("🌐 Data successfully retrieved from API", icon="✅")
-                
-                base_time = datetime.combine(forecast_date, time(start_hour, 0))
-                hours = [base_time + timedelta(hours=i) for i in range(24)]
-                
-                predictions = []
-                current_lags = pm_history.copy()
-                
-                with st.spinner("Generating forecast..."):
-                    progress_bar = st.progress(0)
+                    
+                    input_df = pd.DataFrame([features])
+                    
+                    pred = models['main'].predict(input_df)[0]
+                    upper = models['upper'].predict(input_df)[0]
+                    lower = models['lower'].predict(input_df)[0]
+                    
+                    predictions.append({
+                        'timestamp': hour.strftime('%Y-%m-%d %H:%M'),
+                        'prediction': pred,
+                        'upper_95': upper,
+                        'lower_05': lower,
+                        'aqi_category': get_aqi_category(pred),
+                        'data_source': weather.get('data_source', 'OpenWeatherMap API')
+                    })
+                    
+                    current_lags.pop(0)
+                    current_lags.append(pred)
 
-                    for i, hour in enumerate(hours):
-                        # Use the weather data we already fetched
-                        features = {
-                            'lag_1': current_lags[-1],
-                            'lag_2': current_lags[-2],
-                            'lag_3': current_lags[-3],
-                            'lag_4': current_lags[-4],
-                            'lag_5': current_lags[-5],
-                            'hour': hour.hour,
-                            'week': hour.isocalendar()[1],
-                            'year': hour.year,
-                            'dew_point': weather['dew_point'],
-                            'wind_speed': weather['wind_speed'],
-                            'wind_deg': weather['wind_deg'],
-                            'pressure': weather['pressure'],
-                            'humidity': weather['humidity'],
-                            'temperature': weather['temperature'],
-                            'temp_max': weather['temp_max']
-                        }
-                        
-                        input_df = pd.DataFrame([features])
-                        
-                        pred = models['main'].predict(input_df)[0]
-                        upper = models['upper'].predict(input_df)[0]
-                        lower = models['lower'].predict(input_df)[0]
-                        
-                        predictions.append({
-                            'timestamp': hour.strftime('%Y-%m-%d %H:%M'),
-                            'prediction': pred,
-                            'upper_95': upper,
-                            'lower_05': lower,
-                            'aqi_category': get_aqi_category(pred),
-                            'data_source': weather.get('data_source', 'OpenWeatherMap API')
-                        })
-                        
-                        current_lags.pop(0)
-                        current_lags.append(pred)
-
-                        # Update progress after each hour is processed
-                        progress_bar.progress((i + 1) / len(hours)) 
-                         
-                progress_bar.empty()
-                st.session_state.forecast_results = pd.DataFrame(predictions)
-                
-            except Exception as e:
-                st.error(f"Forecast generation failed: {str(e)}")
+                    # Update progress after each hour is processed
+                    progress_bar.progress((i + 1) / len(hours)) 
+                     
+            progress_bar.empty()
+            st.session_state.forecast_results = pd.DataFrame(predictions)
+            
+        except Exception as e:
+            st.error(f"Forecast generation failed: {str(e)}")
 
     # Display results and download button OUTSIDE the form
     if st.session_state.forecast_results is not None:
@@ -234,9 +235,9 @@ elif selected == "Methodology":
     ### Model Architecture
     - **Algorithm**: LightGBM Ensemble with Quantile Regression  
     - **Features**:  
-      - Temporal: Hour of day, week of year  
-      - PM2.5 Lags: 1-5 hour history  
-      - Weather: Temperature, humidity, wind speed  
+    - Temporal: Hour of day, week of year  
+    - PM2.5 Lags: 1-5 hour history  
+    - Weather: Temperature, humidity, wind speed  
     - **Confidence Intervals**: 5th-95th percentiles  
     """)
     #st.image("model_architecture.png")
