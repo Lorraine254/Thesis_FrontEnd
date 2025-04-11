@@ -1,2 +1,4 @@
 frontend
 preprocessing.py
+.env
+aqi.png
