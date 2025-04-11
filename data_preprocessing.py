@@ -71,12 +71,17 @@ def load_models():
             return None
         
         main_model = models.get('main_model')
+        upper_model = models.get('upper_model')
+        lower_model = models.get('lower_model')
+
         if main_model is None:
             st.error("Main model not found in the model file")
             return None
         
         return {
-            'main': models['main_model']
+            'main': models['main_model'],
+            'upper': upper_model,
+            'lower': lower_model
         }
     except Exception as e:
         st.error(f"Model loading failed: {str(e)}")

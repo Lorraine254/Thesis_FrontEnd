@@ -643,7 +643,7 @@ elif selected == "Interpretation":
     data = read_data()
     models = load_models()
 
-    if not models:
+    if not models or 'main' not in models:
         st.error("Main model not available for interpretation")
         st.stop()
     
