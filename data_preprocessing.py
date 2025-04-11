@@ -14,6 +14,10 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
+import lime
+import lime.lime_tabular
+from lime import lime_tabular
+
 NAIROBI_BOUNDS = {
     'min_lat': -1.47,
     'max_lat': -1.15,
@@ -44,7 +48,13 @@ def create_lag_features(df, lag=5):
 @st.cache_data
 def train_test_split_data(df):
     df_lagged = create_lag_features(df, lag=5)
-    X = df_lagged.drop(columns=['pm2.5'])
+    # Only keep the features that were used in training
+    required_features = [
+        'lag_1','lag_2','hour','year','lag_5','lag_3','lag_4',
+        'dew_point','wind_speed','wind_deg','pressure','week',
+        'temperature','humidity','temp_max'
+    ]
+    X = df_lagged[required_features]
     y = df_lagged['pm2.5']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     return X_train, X_test, y_train, y_test
@@ -56,10 +66,17 @@ def load_models():
     """Load all LightGBM models (main + quantile)"""
     try:
         models = load('lightgbm_models.joblib')
+        if not isinstance(models, dict):
+            st.error("Invalid model format - expected dictionary")
+            return None
+        
+        main_model = models.get('main_model')
+        if main_model is None:
+            st.error("Main model not found in the model file")
+            return None
+        
         return {
-            'main': models['main_model'],
-            'upper': models['upper_model'],
-            'lower': models['lower_model']
+            'main': models['main_model']
         }
     except Exception as e:
         st.error(f"Model loading failed: {str(e)}")
@@ -172,3 +189,21 @@ def geocode_location(location_name):
                 return None
             time.sleep(retry_delay)
     return None
+
+@st.cache_resource
+def get_explainer(X_train):
+    """Create and cache a LIME explainer for the model"""
+    try:
+        explainer = lime.lime_tabular.LimeTabularExplainer(
+            training_data=X_train.values,
+            feature_names=X_train.columns,
+            class_names=['PM2.5'],
+            mode='regression',
+            verbose=False,
+            discretize_continuous=True,
+            random_state=42
+        )
+        return explainer
+    except Exception as e:
+        st.error(f"Could not create explainer: {str(e)}")
+        return None        
