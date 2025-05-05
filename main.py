@@ -3,7 +3,7 @@ import pandas as pd
 from streamlit_option_menu import option_menu
 from data_preprocessing import (read_data, create_lag_features, 
                               train_test_split_data, load_models,
-                              validate_nairobi_location, geocode_location,fetch_weather,get_explainer)
+                              validate_nairobi_location, geocode_location,fetch_weather,get_explainer,get_today)
 from visuals import (get_aqi_category, get_aqi_color, display_forecast_results)
 import numpy as np
 from datetime import datetime, timedelta, time
@@ -92,7 +92,7 @@ elif selected == "Prediction":
 
     # Fixed Nairobi coordinates
     NAIROBI_COORDS = (-1.286389, 36.817223)
-    today = datetime.now().date()  # Define 'today' variable
+    today = get_today()  # Define 'today' variable
     
     # Compact form with border
     with st.form('pm25_form', border=True):
