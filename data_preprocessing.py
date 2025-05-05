@@ -170,6 +170,11 @@ def fetch_weather(lat, lon, target_time):
             'temp_max': 22.0 + 4*math.sin(hour/24*2*math.pi),
             'data_source': 'Simulated Nairobi Data'
         }
+@st.cache_data(ttl=60*60*24)  # Refresh daily
+def get_today():
+    return datetime.now().date()
+
+today = get_today()
     
 @st.cache_data
 def validate_nairobi_location(lat, lon):
