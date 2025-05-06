@@ -173,8 +173,6 @@ def fetch_weather(lat, lon, target_time):
 @st.cache_data(ttl=60*60*24)  # Refresh daily
 def get_today():
     return datetime.now().date()
-
-today = get_today()
     
 @st.cache_data
 def validate_nairobi_location(lat, lon):
