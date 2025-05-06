@@ -103,7 +103,7 @@ def fetch_weather(lat, lon, target_time):
                 params={
                     'lat': lat,
                     'lon': lon,
-                    'appid': st.secrets.get("OPENWEATHER_API_KEY"),
+                    'appid': st.secrets("OPENWEATHER_API_KEY"),
                     'units': 'metric'
                 },
                 timeout=10
@@ -128,7 +128,7 @@ def fetch_weather(lat, lon, target_time):
                 params={
                     'lat': lat,
                     'lon': lon,
-                    'appid': st.secrets.get("OPENWEATHER_API_KEY"),
+                    'appid': st.secrets("OPENWEATHER_API_KEY"),
                     'units': 'metric',
                     'cnt': 40  # Number of timestamps (5 days in 3-hour intervals)
                 },
