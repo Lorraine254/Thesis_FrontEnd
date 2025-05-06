@@ -81,7 +81,7 @@ if selected == "Home":
 elif selected == "Prediction":
     st.markdown("### :orange[24-Hour PM2.5 Forecast with Confidence Intervals]")
     # Add this debug check at the start of your Prediction tab
-    st.write("API key present:", "OPENWEATHER_API_KEY" in st.secrets)
+    #st.write("API key present:", "OPENWEATHER_API_KEY" in st.secrets)
     
     # Initialize session state for predictions if it doesn't exist
     if 'forecast_results' not in st.session_state:
