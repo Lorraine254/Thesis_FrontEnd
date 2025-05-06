@@ -240,7 +240,7 @@ elif selected == "Prediction":
             mime="text/csv"
         )
 
-elif selected == "EDA":
+elif selected == "Methodology":
     st.header(":orange[PM2.5 Air Quality Analysis]", divider=True)
     
     # Load data with preprocessing pipeline
