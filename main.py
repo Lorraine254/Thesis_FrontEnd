@@ -24,8 +24,8 @@ st.set_page_config(page_title="Nairobi PM2.5 Prediction Tool", page_icon="🪂",
 
 # Sidebar navigation
 with st.sidebar:
-    selected = option_menu(None, ["Home","EDA", "Prediction","Interpretation"], 
-                         icons=['house', 'book','gear','play'], 
+    selected = option_menu(None, ["Home","Methodology", "Prediction"], #,"Interpretation"
+                         icons=['house', 'book','gear'], #,'play'
                          menu_icon="cast", default_index=0,
                          styles={
                              "icon": {"color": "orange", "font-size": "16px"},
