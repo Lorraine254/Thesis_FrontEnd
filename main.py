@@ -1,52 +1,61 @@
 import streamlit as st
 import pandas as pd
 from streamlit_option_menu import option_menu
-import streamlit.components.v1 as components
-from data_preprocessing import (read_data,create_lag_features,train_test_split_data,load_models,display_model_results,download_objects,get_explainer,validate_nairobi_location,geocode_location)
-from visuals import (plot_model_results,get_aqi_category,get_aqi_color,display_forecast_results,get_aqi_category)
+from data_preprocessing import (read_data, create_lag_features, 
+                              train_test_split_data, load_models,
+                              validate_nairobi_location, geocode_location,fetch_weather,get_explainer)
+from visuals import (get_aqi_category, get_aqi_color, display_forecast_results)
 import numpy as np
-import lime
-import lime.lime_tabular
-from lime import lime_tabular
-from datetime import datetime
-import plotly.express as px
-import calendar 
-import geopandas as gpd
-from libpysal import weights
-from esda import G_Local
-import joblib
-from datetime import timedelta, time
+from datetime import datetime, timedelta, time
 import math
 import random
 import plotly.graph_objects as go
+import geopandas as gpd
+from libpysal import weights
+from esda import G_Local
+import plotly.express as px
+import calendar 
+import streamlit.components.v1 as components
+
 
 
 # Page configuration
 st.set_page_config(page_title="Nairobi PM2.5 Prediction Tool", page_icon="🪂", layout="wide")
 
-
-model_path = 'all_models.pkl'
-note_book_path = 'model_building.html'
-
-
+# Sidebar navigation
 with st.sidebar:
-    selected = option_menu(None, ["Home","EDA", "Models", "Prediction",'Interpretation'], 
-    icons     =['house', 'cloud-upload', "list-task", 'gear'], 
-    menu_icon ="cast", default_index=0, orientation="vertical",
+    selected = option_menu(None, ["Home","EDA", "Prediction","Interpretation"], 
+                         icons=['house', 'book','gear','play'], 
+                         menu_icon="cast", default_index=0,
+                         styles={
+                             "icon": {"color": "orange", "font-size": "16px"},
+                             "nav-link": {"font-size": "15px", "text-align": "left", "margin":"0px", "--hover-color": "#eee"},
+                             "nav-link-selected": {"background-color": "green"},
+                         })
     
-    styles={
-    "icon"              : {"color": "orange", "font-size": "16px"}, 
-    "nav-link"          : {"font-size": "15px", "text-align": "left", "margin":"0px", "--hover-color": "#eee"},
-    "nav-link-selected" : {"background-color": "green"},
-    })
+    with st.expander("❓ How to Use This Tool"):
+        st.markdown("""
+        1. **Navigate to the prediction tab.**
+        2. **Choose your forecast start date (default: today)**  
+        3. **Select start hour (24-hour format)** 
+        4. **Enter PM₂.₅ measurements from the last 5 hours (in µg/m³)**  
+        5. Click **Generate Forecast**  
+        """)
+        st.table(pd.DataFrame({
+            "AQI Category": ["Good", "Moderate", "Unhealthy", "Very Unhealthy", "Hazardous"],
+            "PM2.5 Range": ["0-12", "12-35", "35-55", "55-150", "250+"],
+            "Color": ["🟢", "🟡", "🟠", "🔴", "🟤"]
+        }))
+        
 
 if selected == "Home":
-
-    st.header(":orange[Nairobi PM2.5 Prediction Tool]", divider=True)
-    st.write("Welcome to the PM2.5 prediction tool for Nairobi.") 
-    st.write("The dataset used in this study was obtained from Sensors Africa and Openweather.")
-    #st.write("Distribution of the sensors used in the study:")
-
+    st.title("PM2.5 Forecasting System")
+    st.markdown("""
+    ### Nairobi Air Quality Prediction
+    This system provides 24-hour PM2.5 forecasts with confidence intervals.
+    """)
+    
+    
     st.subheader(":orange[Air Quality Sensor Network]")
     
     # Sensor coordinates data
@@ -65,20 +74,169 @@ if selected == "Home":
                      36.854, 36.879, 36.887, 36.862]
     }
     
-    # Create DataFrame
     sensor_df = pd.DataFrame(sensor_locations)
+    st.map(sensor_df, latitude='Latitude', longitude='Longitude', color='#FF4B4B', size=15, zoom=10)
+    st.caption("Figure 1: Distribution of air quality sensors used in this study")
+
+elif selected == "Prediction":
+    st.markdown("### :orange[24-Hour PM2.5 Forecast with Confidence Intervals]")
     
-    # Create the map - all points visible
-    st.map(sensor_df,
-          latitude='Latitude',
-          longitude='Longitude',
-          color='#FF4B4B',  # Nairobi orange
-          size=15,  # Visible point size
-          zoom=10)  # Nairobi city view
+    # Initialize session state for predictions if it doesn't exist
+    if 'forecast_results' not in st.session_state:
+        st.session_state.forecast_results = None
     
-    # Minimal description
-    st.caption("Figure 1: Distribution of 43 air quality sensors used in this study")
-    st.write("Data source: Sensors Africa")
+    # Load models
+    models = load_models()
+    if not models:
+        st.stop()
+
+    # Fixed Nairobi coordinates
+    NAIROBI_COORDS = (-1.286389, 36.817223)
+    today = datetime.now().date()  # Define 'today' variable
+    
+    # Compact form with border
+    with st.form('pm25_form', border=True):
+        # Date and Hour Input section (formerly in expander)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Enhanced date input with tomorrow as default
+            min_date = today
+            max_date = today + timedelta(days=5)  # 5-day forecast limit
+            default_date = today   # Default to today
+            
+            forecast_date = st.date_input(
+                "Choose your forecast start date (any date from today through [today + 5 days]:",
+                min_value=min_date,
+                max_value=max_date,
+                value=default_date,
+                help="Weather data available for up to 5 days in advance"
+            )
+            
+            # Show warning if trying to forecast beyond API limits
+            if forecast_date > today + timedelta(days=5):
+                st.warning("Note: Forecast limited to 5 days ahead")
+
+            start_hour = st.slider("Choose the starting hour:", 0, 23, 8, help="Use the 24-hour clock system")  # Default to 8 AM
+        
+        with col2: 
+            # Weather data handling
+            if forecast_date == today + timedelta(days=1):  # If forecasting tomorrow
+                st.info("""
+                **Weather Data Note:**  
+                Using today's latest observed weather as baseline,
+                with tomorrow's forecasted weather patterns
+                """)
+        
+        # Location display (fixed to Nairobi)
+        # st.markdown(f"**Location:** Nairobi (Lat: {NAIROBI_COORDS[0]:.4f}, Lon: {NAIROBI_COORDS[1]:.4f})")
+        
+        # PM2.5 history inputs (formerly in expander)
+        st.markdown("**Enter PM2.5 measurements from the last 5 hours (in µg/m³)**")
+        pm_cols = st.columns(5)
+        pm_history = []
+        for i, col in enumerate(pm_cols, 1):
+            with col:
+                pm_history.append(
+                    st.number_input(f"{i} hour ago", 
+                                min_value=0.0, 
+                                max_value=100.0, 
+                                value=15.0,
+                                key=f"pm_{i}")
+                )
+        
+        submitted = st.form_submit_button("Generate Forecast")
+
+    if submitted:
+        try:
+            # Get weather data (either current or forecast)
+            if forecast_date == today + timedelta(days=1):  # Tomorrow's forecast
+                current_weather = fetch_weather(*NAIROBI_COORDS, datetime.now())
+                forecast_weather = fetch_weather(*NAIROBI_COORDS, 
+                                              datetime.combine(forecast_date, time(start_hour, 0)))
+                weather = {
+                    **current_weather,
+                    **{k: forecast_weather[k] for k in ['temperature', 'wind_speed', 'humidity']}
+                }
+            else:  # Today or other dates
+                weather = fetch_weather(*NAIROBI_COORDS, datetime.combine(forecast_date, time(start_hour, 0)))
+                if weather.get('data_source') == 'Simulated Data':
+                    st.error("⚠️ Using simulated weather data (API unavailable)")
+                else:
+                    st.success("✅ Live weather data loaded")
+            
+            # API status feedback
+            if weather.get('data_source', '').startswith('OpenWeatherMap'):
+                st.toast("🌐 Data successfully retrieved from API", icon="✅")
+            
+            base_time = datetime.combine(forecast_date, time(start_hour, 0))
+            hours = [base_time + timedelta(hours=i) for i in range(24)]
+            
+            predictions = []
+            current_lags = pm_history.copy()
+            
+            with st.spinner("Generating forecast..."):
+                progress_bar = st.progress(0)
+
+                for i, hour in enumerate(hours):
+                    # Use the weather data we already fetched
+                    features = {
+                        'lag_1': current_lags[-1],
+                        'lag_2': current_lags[-2],
+                        'lag_3': current_lags[-3],
+                        'lag_4': current_lags[-4],
+                        'lag_5': current_lags[-5],
+                        'hour': hour.hour,
+                        'week': hour.isocalendar()[1],
+                        'year': hour.year,
+                        'dew_point': weather['dew_point'],
+                        'wind_speed': weather['wind_speed'],
+                        'wind_deg': weather['wind_deg'],
+                        'pressure': weather['pressure'],
+                        'humidity': weather['humidity'],
+                        'temperature': weather['temperature'],
+                        'temp_max': weather['temp_max']
+                    }
+                    
+                    input_df = pd.DataFrame([features])
+                    
+                    pred = models['main'].predict(input_df)[0]
+                    upper = models['upper'].predict(input_df)[0]
+                    lower = models['lower'].predict(input_df)[0]
+                    
+                    predictions.append({
+                        'timestamp': hour.strftime('%Y-%m-%d %H:%M'),
+                        'prediction': pred,
+                        'upper_95': upper,
+                        'lower_05': lower,
+                        'aqi_category': get_aqi_category(pred),
+                        'data_source': weather.get('data_source', 'OpenWeatherMap API')
+                    })
+                    
+                    current_lags.pop(0)
+                    current_lags.append(pred)
+
+                    # Update progress after each hour is processed
+                    progress_bar.progress((i + 1) / len(hours)) 
+                     
+            progress_bar.empty()
+            st.session_state.forecast_results = pd.DataFrame(predictions)
+            
+        except Exception as e:
+            st.error(f"Forecast generation failed: {str(e)}")
+
+    # Display results and download button OUTSIDE the form
+    if st.session_state.forecast_results is not None:
+        display_forecast_results(st.session_state.forecast_results)
+        
+        # Download button
+        csv = st.session_state.forecast_results.to_csv(index=False)
+        st.download_button(
+            label="Download Forecast Data",
+            data=csv,
+            file_name=f"pm25_forecast_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv"
+        )
 
 elif selected == "EDA":
     st.header(":orange[PM2.5 Air Quality Analysis]", divider=True)
@@ -93,7 +251,7 @@ elif selected == "EDA":
     df = load_eda_data()
 
     # Create tabs for different EDA views
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Overview", "📈 Time Trends", "🔍 Feature Relationships" ,"♨️ Hotspot Analysis", ])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Overview", "📈 Time Trends", "🔍 Feature Relationships" ,"♨️ Hotspot Analysis"])
     
     with tab1:
         st.subheader("Processed Data Preview")
@@ -238,48 +396,45 @@ elif selected == "EDA":
 
     with tab4:
         st.subheader("PM2.5 Hotspot Analysis (All Years Combined)")
-
-        # Hypothesis Testing Explanation
+        # Hypothesis Testing Explanation - First expander
         with st.expander("🔍 About the Hotspot Analysis Method", expanded=True):
-         st.markdown("""
-        **Spatial Hypothesis Being Tested:**
-        
-        *Null Hypothesis (H₀):* PM2.5 concentrations are randomly distributed across space  
-        *Alternative Hypothesis (H₁):* PM2.5 concentrations show statistically significant spatial clustering
-        
-        We use the **Getis-Ord Gi* statistic** to test this hypothesis, which identifies:
-        """)
-        
-        cols = st.columns(3)
-        with cols[0]:
-            st.markdown("""
-            **🔥 Hotspots**  
-            Areas with *significantly higher* PM2.5 values than expected by chance:
-            - Z-score > +1.96 (p < 0.05)
-            - Indicates pollution clustering
-            """)
-        with cols[1]:
-            st.markdown("""
-            **❄️ Coldspots**  
-            Areas with *significantly lower* PM2.5 values than expected:
-            - Z-score < -1.96 (p < 0.05)
-            - Indicates clean air clustering
-            """)
-        with cols[2]:
-            st.markdown("""
-            **⚪ Normal Areas**  
-            No significant spatial pattern:
-            - -1.96 ≤ Z-score ≤ +1.96  
-            - PM2.5 levels are spatially random
-            """)
-        
-        st.markdown("""
-        **Interpretation Guide:**
-        - Z-scores measure standard deviations from the mean spatial pattern
-        - p-values < 0.05 indicate statistical significance (95% confidence)
-        - Analysis uses a 1km neighborhood radius (threshold=0.01 decimal degrees)
-        """)
-    
+                st.markdown("""
+                **Spatial Hypothesis Test:**  
+                *Null Hypothesis (H₀):* PM2.5 concentrations are randomly distributed across space.  
+                *Alternative (H₁):* PM2.5 concentrations show statistically significant clustering (hotspots or coldspots).  
+
+                We use the **Getis-Ord Gi* statistic** to test this hypothesis, which identifies:
+                """)
+                
+                cols = st.columns(3)
+                with cols[0]:
+                    st.markdown("""
+                    **🔥 Hotspots**  
+                    Areas with *significantly higher* PM2.5 values than expected by chance:  
+                    - Z-score > +1.96 **AND** p < 0.05  
+                    - Indicates **pollution clustering**  
+                    """)
+                with cols[1]:
+                    st.markdown("""
+                    **❄️ Coldspots**  
+                    Areas with *significantly lower* PM2.5 values than expected: 
+                    - Z-score < -1.96 **AND** p < 0.05  
+                    - Indicates **clean air clustering**  
+                    """)
+                with cols[2]:
+                    st.markdown("""
+                    **⚪ Normal Areas**  
+                    *No significant clustering*:  
+                    - |Z-score| ≤ 1.96 **OR** p ≥ 0.05  
+                    - PM2.5 is spatially random  
+                    """)
+                
+                st.markdown(f"""
+                **Key Notes for Interpretation:**  
+                - **Z-score** → Strength/Direction of clustering (🔥 +/❄️ -).  
+                - **p-value < 0.05** → 95% confidence to reject H₀.
+                """)
+
         try:
             # Create sensor locations DataFrame
             sensor_locations = {
@@ -339,34 +494,41 @@ elif selected == "EDA":
             
             hotspot_df = pd.DataFrame(sensor_locations)
             
-            # Calculate average PM2.5 across all years for each location
+            # Calculate average PM2.5 across all years
             pm_columns = [f'pm2.5_{year}' for year in range(2018, 2025)]
             hotspot_df['pm2.5_avg'] = hotspot_df[pm_columns].mean(axis=1)
-            
-            # Remove any rows with NaN values
             hotspot_df = hotspot_df.dropna(subset=['pm2.5_avg'])
-            
-            # Convert to GeoDataFrame
+
+            # Convert to GeoDataFrame and reproject to UTM
             gdf = gpd.GeoDataFrame(
                 hotspot_df,
                 geometry=gpd.points_from_xy(hotspot_df.longitude, hotspot_df.latitude),
                 crs="EPSG:4326"
+            ).to_crs(epsg=32637)  # UTM Zone 37S for Kenya
+
+            # Create spatial weights matrix (1km threshold in meters)
+            w = weights.DistanceBand.from_dataframe(
+                gdf, 
+                threshold=1000,  # 1km in meters
+                binary=False,
+                silence_warnings=True
             )
-            
-            # Create spatial weights matrix (1km neighborhood)
-            w = weights.DistanceBand.from_dataframe(gdf, threshold=0.01)
-            
-            # Perform Getis-Ord Gi* analysis
-            gi = G_Local(gdf['pm2.5_avg'].values, w, star=True)
-            
-            # Add results to DataFrame
+
+            # Perform Getis-Ord Gi* analysis with fixed random seed
+            np.random.seed(123)  # For reproducibility
+            gi = G_Local(
+                gdf['pm2.5_avg'].values, 
+                w, 
+                star=True,
+                permutations=999
+            )
+
+            # Add results (drop NaNs instead of filling with 0)
             gdf['gi_zscore'] = gi.z_sim
             gdf['gi_pvalue'] = gi.p_sim
-            
-            # Replace NaN values in z-scores with 0
-            gdf['gi_zscore'] = gdf['gi_zscore'].fillna(0)
-            
-            # Classify hotspots and coldspots
+            gdf = gdf[~np.isnan(gdf['gi_zscore'])]
+
+            # Classify hotspots/coldspots
             gdf['hotspot'] = np.where(
                 (gdf['gi_zscore'] > 1.96) & (gdf['gi_pvalue'] < 0.05),
                 "Hotspot",
@@ -376,31 +538,37 @@ elif selected == "EDA":
                     "Normal"
                 )
             )
-            
-            # Create marker sizes - ensure no NaN values and scale appropriately
-            gdf['marker_size'] = np.abs(gdf['gi_zscore']).replace(np.nan, 0)
+
+            # Scale marker sizes for visualization
+            gdf['marker_size'] = np.where(
+                gdf['hotspot'] != "Normal",
+                np.abs(gdf['gi_zscore']),
+                5  # Base size for normal points
+            )
             min_size, max_size = 5, 20
-            if gdf['marker_size'].max() > 0:
+            if gdf['marker_size'].max() > min_size:
                 gdf['marker_size'] = min_size + (max_size - min_size) * (
                     (gdf['marker_size'] - gdf['marker_size'].min()) / 
                     (gdf['marker_size'].max() - gdf['marker_size'].min())
-                )    
-            
+                )
+
+            # Convert back to WGS84 for visualization
+            gdf_vis = gdf.to_crs(epsg=4326)
+
             # Create layout
             col_map, col_stats = st.columns([2, 1])
             
             with col_map:
-                # Interactive hotspot map
                 st.markdown("**Hotspot Map (All Years Average)**")
                 fig = px.scatter_mapbox(
-                    gdf,
+                    gdf_vis,
                     lat="latitude",
                     lon="longitude",
                     color="hotspot",
                     color_discrete_map={
                         "Hotspot": "red",
                         "Coldspot": "blue",
-                        "Normal": "black"
+                        "Normal": "gray"
                     },
                     size="marker_size",
                     hover_data=["pm2.5_avg", "gi_zscore", "gi_pvalue"],
@@ -414,11 +582,10 @@ elif selected == "EDA":
                 st.plotly_chart(fig, use_container_width=True)
             
             with col_stats:
-                # Statistics section
                 st.markdown("**Analysis Results**")
                 
-                hotspots = gdf[gdf['hotspot'] == "Hotspot"]
-                coldspots = gdf[gdf['hotspot'] == "Coldspot"]
+                hotspots = gdf_vis[gdf_vis['hotspot'] == "Hotspot"]
+                coldspots = gdf_vis[gdf_vis['hotspot'] == "Coldspot"]
                 
                 st.metric("Significant Hotspots", len(hotspots))
                 st.metric("Significant Coldspots", len(coldspots))
@@ -426,397 +593,137 @@ elif selected == "EDA":
                 if not hotspots.empty:
                     st.markdown("**Top Hotspot Locations**")
                     st.dataframe(
-                        hotspots.nlargest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
+                        hotspots.nlargest(3, 'gi_zscore')[
+                            ['latitude', 'longitude', 'pm2.5_avg', 'gi_zscore']
+                        ],
+                        column_config={
+                            "gi_zscore": st.column_config.NumberColumn(format="%.2f"),
+                            "pm2.5_avg": st.column_config.NumberColumn(format="%.2f μg/m³")
+                        },
                         hide_index=True
                     )
                 
                 if not coldspots.empty:
                     st.markdown("**Top Coldspot Locations**")
                     st.dataframe(
-                        coldspots.nsmallest(3, 'gi_zscore')[['latitude', 'longitude', 'pm2.5_avg']],
+                        coldspots.nsmallest(3, 'gi_zscore')[
+                            ['latitude', 'longitude', 'pm2.5_avg', 'gi_zscore']
+                        ],
+                        column_config={
+                            "gi_zscore": st.column_config.NumberColumn(format="%.2f"),
+                            "pm2.5_avg": st.column_config.NumberColumn(format="%.2f μg/m³")
+                        },
                         hide_index=True
                     )
             
-            # Full results expander
+            # Second expander for complete results (not nested)
             with st.expander("View Complete Analysis Data"):
                 st.dataframe(
-                    gdf.sort_values('gi_zscore', ascending=False)[
+                    gdf_vis.sort_values('gi_zscore', ascending=False)[
                         ['latitude', 'longitude', 'pm2.5_avg', 'hotspot', 'gi_zscore', 'gi_pvalue']
                     ],
                     column_config={
                         "gi_zscore": st.column_config.NumberColumn("Z-Score", format="%.2f"),
                         "gi_pvalue": st.column_config.NumberColumn("P-Value", format="%.4f"),
-                        "pm2.5_avg": st.column_config.NumberColumn("Avg PM2.5", format="%.2f μg/m³")
+                        "pm2.5_avg": st.column_config.NumberColumn("PM2.5", format="%.2f μg/m³")
                     },
                     height=300
                 )
-        
+
         except ImportError as e:
             st.error(f"Required packages not found: {str(e)}")
             st.info("Install with: pip install geopandas libpysal esda plotly")
         except Exception as e:
             st.error(f"Analysis error: {str(e)}")
 
-
-    
-elif selected == "Models":
-    st.subheader(':orange[Trained Models Information]', divider=True)
-    
-    # Load data and models
-    with st.expander('Training Data (X_train)'):
-        data = read_data()
-        X_train, X_val, X_test, y_train, y_val, y_test = train_test_split_data(data)
-        st.write("Features (X_train):")
-        st.dataframe(X_train)
-        st.write("Target (y_train):")
-        st.dataframe(y_train)
-    
-    loaded_models, loaded_model_results,models_metadata = load_models()
-    
-    if not loaded_models:
-        st.warning("No models loaded successfully")
-        st.stop()
-    
-    df = pd.DataFrame(loaded_model_results)
-    
-    # Metric comparison
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.container(border=True):
-            st.plotly_chart(plot_model_results(df, 'rmse'), use_container_width=True)
-            st.caption("Lower RMSE values indicate better performance")
-    with col2:
-        with st.container(border=True):
-            st.plotly_chart(plot_model_results(df, 'r2'), use_container_width=True)
-            st.caption("Higher R² values indicate better fit (1.0 is perfect)")
-    
-    # # Individual model details
-    # for model_name, model in loaded_models.items():
-    #     with st.expander(f"{model_name} Details", expanded=False):
-    #         # Find corresponding results
-    #         model_result = next((r for r in loaded_model_results if r['model_name'] == model_name), None)
-            
-    #         # Display metrics
-    #         if model_result:
-    #             cols = st.columns(2)
-    #             with cols[0]:
-    #                 st.subheader("Training Performance")
-    #                 st.metric("RMSE", f"{model_result['train_rmse']:.3f}",
-    #                          help="Root Mean Squared Error on training data")
-    #                 st.metric("R²", f"{model_result['train_r2']:.3f}",
-    #                          help="Variance explained on training data (0-1 scale)")
-                    
-    #                 # Training data predictions plot
-    #                 y_train_pred = model.predict(X_train)
-    #                 fig_train = px.scatter(
-    #                     x=y_train,
-    #                     y=y_train_pred,
-    #                     labels={'x': 'Actual', 'y': 'Predicted'},
-    #                     title=f"{model_name} Training Predictions"
-    #                 )
-    #                 fig_train.add_shape(type='line', x0=y_train.min(), y0=y_train.min(),
-    #                                   x1=y_train.max(), y1=y_train.max())
-    #                 st.plotly_chart(fig_train, use_container_width=True)
-                
-    #             with cols[1]:
-    #                 st.subheader("Test Performance")
-    #                 if model_result['test_rmse'] is not None:
-    #                     st.metric("RMSE", f"{model_result['test_rmse']:.3f}",
-    #                              help="Root Mean Squared Error on test data")
-    #                     st.metric("R²", f"{model_result['test_r2']:.3f}",
-    #                              help="Variance explained on test data (0-1 scale)")
-                        
-    #                     # Test data predictions plot
-    #                     y_test_pred = model.predict(X_test)
-    #                     fig_test = px.scatter(
-    #                         x=y_test,
-    #                         y=y_test_pred,
-    #                         labels={'x': 'Actual', 'y': 'Predicted'},
-    #                         title=f"{model_name} Test Predictions"
-    #                     )
-    #                     fig_test.add_shape(type='line', x0=y_test.min(), y0=y_test.min(),
-    #                                       x1=y_test.max(), y1=y_test.max())
-    #                     st.plotly_chart(fig_test, use_container_width=True)
-    #                 else:
-    #                     st.warning("Test metrics not available")
-            
-    #         # Feature importance
-    #         if model_result and model_result.get('feature_importance'):
-    #             st.subheader("Feature Importance")
-    #             importance_df = pd.DataFrame(
-    #                 model_result['feature_importance'].items(),
-    #                 columns=['Feature', 'Importance']
-    #             ).sort_values('Importance', ascending=False)
-                
-    #             tab1, tab2 = st.tabs(["Chart", "Table"])
-    #             with tab1:
-    #                 st.bar_chart(importance_df.set_index('Feature'))
-    #             with tab2:
-    #                 st.dataframe(importance_df.style.format({'Importance': '{:.3f}'}))
-    
-    # # Notebook display
-    # with st.expander("Learn how the model was trained?", expanded=False):
-    #     with open(note_book_path, 'r', encoding='utf-8') as f:
-    #         html_data = f.read()
-    #     components.html(html_data, height=1000, width=800, scrolling=True)
-    
-    # Download section
-    st.sidebar.markdown("### Download")
-    download_choice = st.sidebar.selectbox(
-        label='Select what to download 👇', 
-        options=["Serialized Model", "Notebook"]
-    )
-    
-    if download_choice == 'Serialized Model':
-        with open(model_path, "rb") as f:
-            st.sidebar.download_button(
-                label="Download Model",
-                data=f,
-                file_name="trained_models.pkl"
-            )
-    elif download_choice == 'Notebook':
-        with open(note_book_path, "rb") as f:
-            st.sidebar.download_button(
-                label="Download Notebook",
-                data=f,
-                file_name="model_training.ipynb"
-            )
-
-
-
-elif selected == "Prediction":
-    st.markdown("### :orange[24-Hour PM2.5 Forecast]")
-    
-    # Load models
-    loaded_models, loaded_model_results, models_metadata  = load_models()
-    
-    # Display metrics based on model choice
-    model_choice = st.selectbox("Select model", ["XGBoost", "LightGBM", "Hybrid"])
-
-    if model_choice == "LightGBM":
-            # Use the pre-calculated metrics from lgbm_metadata
-            if 'lgbm_metadata' in models_metadata and 'test_metrics' in models_metadata['lgbm_metadata']:
-                st.metric("Test RMSE", f"{models_metadata['lgbm_metadata']['test_metrics']['rmse']:.2f}")
-            else:
-                # Fallback to our freshly calculated metrics
-                lgb_result = next((r for r in loaded_model_results if r['model_name'] == 'LightGBM'), None)
-                if lgb_result:
-                    st.metric("Test RMSE", f"{lgb_result['test_rmse']:.2f}")
-
-    elif model_choice == "XGBoost":
-            xgb_result = next((r for r in loaded_model_results if r['model_name'] == 'XGBoost'), None)
-            if xgb_result:
-                st.metric("Test RMSE", f"{xgb_result['test_rmse']:.2f}")
-
-    elif model_choice == "Hybrid":
-            hybrid_result = next((r for r in loaded_model_results if r['model_name'] == 'Stacked_model'), None)
-            if hybrid_result:
-                st.metric("Test RMSE", f"{hybrid_result['test_rmse']:.2f}")
-
-    with st.form("forecast_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Date and time selection
-            forecast_date = st.date_input("Forecast date", 
-                                       min_value=datetime.now().date(),
-                                       max_value=datetime.now().date() + timedelta(days=7))
-            start_hour = st.slider("Starting hour", 0, 23, datetime.now().hour)
-            
-            # Location input options
-            location_method = st.radio("Location input method:",
-                                     ["Coordinates", "Place Name"],
-                                     horizontal=True)
-            
-            if location_method == "Coordinates":
-                lat = st.number_input("Latitude (-1.47 to -1.15)", 
-                                    min_value=-1.47, max_value=-1.15, value=-1.2864)
-                lon = st.number_input("Longitude (36.65 to 37.05)", 
-                                   min_value=36.65, max_value=37.05, value=36.8172)
-            else:
-                location_name = st.text_input("Enter place name in Nairobi", "Westlands")
-                if st.button("Geocode Location"):
-                    coords = geocode_location(location_name)
-                    if coords:
-                        lat, lon = coords
-                        st.success(f"Found coordinates: {lat:.4f}, {lon:.4f}")
-                    else:
-                        st.error("Could not find location. Please try different name or use coordinates.")
-                        st.stop()
-        
-        with col2:
-            # PM2.5 history input
-            st.markdown("#### Last 5 Hours PM2.5 Readings")
-            pm_history = [
-                st.number_input(f"{i} hour ago (µg/m³)", 
-                              min_value=0.0, 
-                              max_value=50.0, 
-                              value=15.0,
-                              key=f"pm_{i}")
-                for i in range(5, 0, -1)
-            ]
-        
-        if st.form_submit_button("Generate 24-Hour Forecast"):
-            try:
-                # Validate location
-                if not validate_nairobi_location(lat, lon):
-                    st.error("Coordinates must be within Nairobi boundaries")
-                    st.stop()
-                
-                # Validate PM history
-                if any(pm is None for pm in pm_history):
-                    st.warning("Please provide all historical PM2.5 values")
-                    st.stop()
-                
-                # Generate timeline
-                base_time = datetime.combine(forecast_date, time(start_hour, 0))
-                hours = [base_time + timedelta(hours=i) for i in range(24)]
-                
-                # Get weather forecast - implement your actual API call here
-                def fetch_nairobi_weather(lat, lon, target_time):
-                    """Mock weather data - replace with real API call"""
-                    return {
-                        'dew_point': 15.0 + 5*math.sin(target_time.hour/24*2*math.pi),
-                        'wind_speed': 3.0 + random.uniform(-1, 1),
-                        'wind_deg': random.randint(0, 360),
-                        'pressure': 1013 + random.randint(-10, 10),
-                        'temperature': 20.0 + 10*math.sin(target_time.hour/24*2*math.pi),
-                        'humidity': 50 + int(20*math.sin(target_time.hour/12*math.pi)),
-                        'temp_max': 25.0 + 5*math.sin(target_time.hour/24*2*math.pi)
-                    }
-                # Get feature names - fallback to default if not in metadata
-                if 'features' in models_metadata:
-                        feature_columns = models_metadata['features']
-                else:
-                    # Default feature columns based on your training data
-                    feature_columns = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 
-                                        'hour', 'week', 'year', 'dew_point', 'wind_speed',
-                                        'wind_deg', 'pressure', 'feels_like', 'humidity', 'temp_max']
-                    
-                
-                # Generate predictions
-                predictions = []
-                current_lags = pm_history.copy()
-                
-                with st.spinner("Generating 24-hour forecast..."):
-                    for hour in hours:
-                        # Get weather
-                        weather = fetch_nairobi_weather(lat, lon, hour)
-                        
-                        # Prepare features
-                        features = {
-                            'lag_1': current_lags[-1],
-                            'lag_2': current_lags[-2],
-                            'lag_3': current_lags[-3],
-                            'lag_4': current_lags[-4],
-                            'lag_5': current_lags[-5],
-                            'hour': hour.hour,
-                            'week': hour.isocalendar()[1],
-                            'year': hour.year,
-                            **weather
-                        }
-                        
-                        # Select the appropriate model based on user choice
-                        if model_choice == "LightGBM":
-                            model = loaded_models['LightGBM']
-                            model_upper = models_metadata['lgb_upper']
-                            model_lower = models_metadata['lgb_lower']
-                        elif model_choice == "XGBoost":
-                            model = loaded_models['XGBoost']
-                            # For XGBoost, you might not have upper/lower bounds
-                            model_upper = model  # Or implement your own bounds
-                            model_lower = model
-                        else:  # Hybrid
-                            model = loaded_models['Stacked_model']
-                            # For Hybrid, you might not have upper/lower bounds
-                            model_upper = model
-                            model_lower = model
-                        
-                        # Make prediction
-                        input_df = pd.DataFrame([features])[models_metadata['features']]
-                        pred = model.predict(input_df)[0]
-                        
-                        # Only calculate bounds if models exist
-                        pred_upper = model_upper.predict(input_df)[0] if model_upper else pred
-                        pred_lower = model_lower.predict(input_df)[0] if model_lower else pred
-                        
-                        predictions.append({
-                            'timestamp': hour.strftime('%Y-%m-%d %H:%M'),
-                            'prediction': pred,
-                            'upper_bound': pred_upper,
-                            'lower_bound': pred_lower,
-                            'aqi_category': get_aqi_category(pred)
-                        })
-                        
-                        # Update lags
-                        current_lags.pop(0)
-                        current_lags.append(pred)
-                
-                # Display results
-                display_forecast_results(pd.DataFrame(predictions))
-                
-            except Exception as e:
-                st.error(f"Forecast generation failed: {str(e)}")
-
-
 elif selected == "Interpretation":
     st.markdown("### :orange[Model Interpretation with LIME]")
     
     # Load data and models
     data = read_data()
-    loaded_models, loaded_model_results, models_metadata  = load_models()
-    X_train, _, X_test, _, _, y_test = train_test_split_data(data)
-    
-    if not loaded_models:
-        st.error("No models available for interpretation")
+    models = load_models()
+
+    if not models or 'main' not in models:
+        st.error("Main model not available for interpretation")
         st.stop()
+    
+    # Get just the main model
+    model = models['main']
+    X_train, X_test,y_train, y_test = train_test_split_data(data)
     
     # Get cached explainer
     explainer = get_explainer(X_train)
     if not explainer:
         st.stop()
     
-    # Model selection
-    model_name = st.sidebar.selectbox(
-        "Select Model to Interpret",
-        options=list(loaded_models.keys())
-    )
-    model = loaded_models[model_name]
+     # Combine features and target for display
+    display_data = X_test.join(y_test.rename('Actual PM2.5'))
     
     # Instance selection
-    instance_idx = st.sidebar.selectbox(
-        "Select Data Instance",
-        options=X_test.index.to_list(),
-        format_func=lambda x: f"Instance {x} (Actual: {y_test.loc[x]:.1f} μg/m³)"
+    data_instance = st.sidebar.selectbox(
+        "Select a Data Instance",
+        options=display_data.index.to_list()
     )
     
-    # Display selected instance
-    st.dataframe(X_test.loc[[instance_idx]])
-    st.markdown(f"**Actual PM2.5:** {y_test.loc[instance_idx]:.2f} μg/m³")
-    st.markdown(f"**Predicted PM2.5:** {model.predict(X_test.loc[[instance_idx]])[0]:.2f} μg/m³")
+    # Display full data
+    st.data_editor(
+        display_data,
+        use_container_width=True,
+        height=250,
+        column_config={
+            "Actual PM2.5": st.column_config.NumberColumn(format="%.1f μg/m³")
+        }
+    )
+    st.markdown('👈 Please select a Data Instance')
     
-    if st.button("Explain Prediction"):
-        with st.spinner("Generating explanation..."):
-            try:
-                exp = explainer.explain_instance(
-                    X_test.loc[instance_idx].values,
-                    model.predict,
-                    num_features=15
-                )
+    if data_instance:  
+        # Display selected instance
+        data_picked = display_data.loc[[data_instance]]
+        st.write('### Selected Instance Details')
+        st.data_editor(
+            data_picked,
+            use_container_width=True,
+            disabled=True,
+            column_config={
+                "Actual PM2.5": st.column_config.NumberColumn(format="%.1f μg/m³")
+            }
+        )
+        
+        # Show prediction
+        prediction = model.predict(X_test.loc[[data_instance]])[0]
+        st.metric(
+            "Model Prediction", 
+            f"{prediction:.1f} μg/m³",
+            delta=f"{(prediction - data_picked['Actual PM2.5'].iloc[0]):.1f} vs actual"
+        )
+        
+        # Interpretation toggle
+        on = st.toggle("Show Interpretability", value=False)
+        if on:
+            with st.container(border=True):
+                # Custom CSS to change background color
+                st.markdown("""
+                <style>
+                    .lime-container {
+                        background-color: #f0f0f0 !important;
+                        padding: 20px;
+                        border-radius: 10px;
+                    }
+                </style>
+                """, unsafe_allow_html=True)
                 
-                # Show explanation
-                st.markdown("### Feature Impact on Prediction")
-                cols = st.columns(2)
-                with cols[0]:
-                    st.pyplot(exp.as_pyplot_figure())
-                with cols[1]:
-                    components.html(exp.as_html(), height=500)
-                
-                # Detailed view
-                with st.expander("Detailed Explanation"):
-                    st.write("How features affected this specific prediction:")
-                    for feature, weight in exp.as_list():
-                        st.write(f"- {feature}: {weight:.4f}")
-                        
-            except Exception as e:
-                st.error(f"Explanation failed: {str(e)}")
+                with st.spinner("Generating explanation..."):
+                    try:
+                        exp = explainer.explain_instance(
+                            X_test.loc[data_instance].values,
+                            model.predict,
+                            num_features=15
+                        )
+                        components.html(
+                            exp.as_html(), 
+                            height=800, 
+                            width=900, 
+                            scrolling=True
+                        )
+                    except Exception as e:
+                        st.error(f"Explanation failed: {str(e)}")

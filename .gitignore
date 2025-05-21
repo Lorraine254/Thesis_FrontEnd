@@ -1,5 +1,10 @@
 frontend
 preprocessing.py
 .env
+aqi.png
+148454_deployment.zip
+.env
 148454_deployment.zip
 aqi.png
+.devcontainer
+__pycache__

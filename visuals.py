@@ -1,9 +1,8 @@
 import plotly.express as px
-import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 import streamlit as st
+import pandas as pd
 
 
 
@@ -78,74 +77,85 @@ def get_aqi_color(pm25):
         return '#7E0023'  # Maroon
 
 def display_forecast_results(results_df):
-    """Display forecast results with visualization"""
     st.success("Forecast generated successfully!")
-    st.markdown("### 24-Hour PM2.5 Forecast")
+
+    # Show data source information
+    if 'data_source' in results_df.columns:
+        source = results_df['data_source'].iloc[0]
+        if source == 'Simulated Data':
+            st.warning("""
+            **Note:** Using simulated weather data because:
+            - Historical API only covers last 5 days
+            - Try recent dates for real weather data
+            """)
+        else:
+            st.info(f"Using real weather data from {source}")
+
+    # Create two tabs for different views
+    tab1, tab2 = st.tabs(["📈 Interactive Chart", "📋 Data Table"])
     
-    # Create a copy to avoid modifying the original
-    results_display = results_df.copy()
-    
-    # Add AQI color column if it doesn't exist
-    if 'aqi_color' not in results_display.columns:
-        results_display['aqi_color'] = results_display['prediction'].apply(get_aqi_color)
-    
-    # Plot with AQI coloring
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=results_display['timestamp'],
-        y=results_display['prediction'],
-        name='Predicted PM2.5',
-        line=dict(color='blue')
-    ))
-    fig.add_trace(go.Scatter(
-        x=results_display['timestamp'],
-        y=results_display['upper_bound'],
-        name='Upper Bound',
-        line=dict(color='gray', dash='dash')
-    ))
-    fig.add_trace(go.Scatter(
-        x=results_display['timestamp'],
-        y=results_display['lower_bound'],
-        name='Lower Bound',
-        line=dict(color='gray', dash='dash')
-    ))
-    
-    # Add AQI color bands
-    aqi_thresholds = [0, 12, 35, 55, 150, 250, 500]
-    aqi_colors = ['green', 'blue', 'orange', 'red', 'purple', 'maroon']
-    
-    for i in range(len(aqi_thresholds)-1):
-        fig.add_hrect(
-            y0=aqi_thresholds[i],
-            y1=aqi_thresholds[i+1],
-            fillcolor=aqi_colors[i],
-            opacity=0.2,
-            layer="below",
-            line_width=0
+    with tab1:
+        fig = go.Figure()
+        
+        # Confidence interval band (shown first so it's behind)
+        fig.add_trace(go.Scatter(
+            x=results_df['timestamp'],
+            y=results_df['upper_95'],
+            name='95th Percentile',
+            line=dict(width=0),
+            fillcolor='rgba(0, 100, 255, 0.2)',
+            fill='tonexty'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=results_df['timestamp'],
+            y=results_df['lower_05'],
+            name='5th Percentile',
+            line=dict(width=0),
+            showlegend=False
+        ))
+        
+        # Main prediction line
+        fig.add_trace(go.Scatter(
+            x=results_df['timestamp'],
+            y=results_df['prediction'],
+            name='Predicted PM2.5',
+            line=dict(color='blue', width=2)
+        ))
+        
+        fig.update_layout(
+            title='PM2.5 Forecast with 90% Confidence Interval',
+            xaxis_title='Time',
+            yaxis_title='PM2.5 (µg/m³)',
+            hovermode="x unified",
+            height=600,
+            showlegend=True
         )
+        
+        st.plotly_chart(fig, use_container_width=True)
     
-    fig.update_layout(
-        title='PM2.5 Forecast with Confidence Intervals',
-        xaxis_title='Time',
-        yaxis_title='PM2.5 (µg/m³)',
-        hovermode="x unified"
-    )
-    st.plotly_chart(fig)
-    
-    # Data table with formatting
-    st.markdown("### Detailed Forecast Data")
-    st.dataframe(
-        results_display[['timestamp', 'prediction', 'aqi_category']].style.apply(
-            lambda row: [f'background-color: {get_aqi_color(row["prediction"])}'] * len(row), 
-            axis=1
+    with tab2:
+        st.markdown("### Forecast Data with Confidence Intervals")
+        
+        # Format the dataframe for display
+        display_df = results_df.copy()
+        display_df['Prediction'] = display_df['prediction'].round(2)
+        display_df['95% Upper'] = display_df['upper_95'].round(2)
+        display_df['5% Lower'] = display_df['lower_05'].round(2)
+        display_df['AQI Category'] = display_df['aqi_category']
+        
+        # Create a style function with more subtle highlighting
+        def highlight_aqi(row):
+            color = get_aqi_color(row['Prediction'])
+            # Lighten the color by adding opacity
+            light_color = color + '33'  # Adds 20% opacity (33 in hex)
+            return [f'background-color: {light_color}' if col == 'AQI Category' else '' for col in row.index]
+        
+        # Apply styling only to the AQI Category column
+        st.dataframe(
+            display_df[['timestamp', 'Prediction', '5% Lower', '95% Upper', 'AQI Category']].style.apply(
+                highlight_aqi, 
+                axis=1
+            ),
+            height=600
         )
-    )
-    
-    # Add download button
-    csv = results_display.to_csv(index=False)
-    st.download_button(
-        label="Download Forecast Data",
-        data=csv,
-        file_name=f"pm25_forecast_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
