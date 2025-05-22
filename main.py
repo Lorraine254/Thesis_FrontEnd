@@ -108,7 +108,7 @@ elif selected == "Prediction":
             default_date = today   # Default to today
             
             forecast_date = st.date_input(
-                ""Select date (real-time forecasts for today only):",
+                "Select date (real-time forecasts for today only):",
                 min_value=min_date,
                 max_value=max_date,
                 value=default_date,
