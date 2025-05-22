@@ -108,7 +108,7 @@ elif selected == "Prediction":
             default_date = today   # Default to today
             
             forecast_date = st.date_input(
-                "Choose your forecast start date (any date from today through [today + 5 days]:",
+                ""Select date (real-time forecasts for today only):",
                 min_value=min_date,
                 max_value=max_date,
                 value=default_date,
